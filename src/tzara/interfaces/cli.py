@@ -1,14 +1,19 @@
 from tzara import agent
 
 def run_cli():
-    tzara_agent = agent.Tzara()
+    tzara_agent = agent.Tzara(model="gemma3")
 
     print("Tzara is online. Type 'exit' to quit.\n")
 
     while True:
-        text = input("You: ").strip()
-        if text.lower() in ("exit", "quit"):
+        user_input = input("You: ").strip()
+        if user_input.lower() in ("exit", "quit"):
             print("Tzara: Goodbye.")
             break
+        
+        # Print Tzara label once
+        print("\nTzara: ", end="", flush=True)
 
-        print("Tzara:", tzara_agent.handle(text), "\n")
+        for token in tzara_agent.handle(user_input):
+            print(token, end="", flush=True)
+        print("\n")  # End of response

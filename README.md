@@ -3,6 +3,14 @@ Tzara is a personal AI assistant that helps simplify day-to-day tasks.
 
 It is designed for practical use: reducing mental overhead, clarifying tasks, and helping you stay oriented without turning productivity into a system you have to maintain.
 
+## Dependencies
+Download [Ollama](https://ollama.com/download).
+
+Install Gemma3 from Ollama. Enter the following in your terminal:
+``` bash
+ollama pull gemma3
+```
+
 ## Manual Installation
 Clone the repo:
 ``` python
@@ -31,6 +39,8 @@ Tzara is online. Type 'exit' to quit.
 
 You: 
 ```
+
+To exit, simply type: `exit`
 
 ## Contributing
 
