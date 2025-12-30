@@ -2,23 +2,6 @@
 Tzara is a personal AI assistant that helps simplify day-to-day tasks.
 
 It is designed for practical use: reducing mental overhead, clarifying tasks, and helping you stay oriented without turning productivity into a system you have to maintain.
-## Installation via PyPI (Recommended)
-Install via PyPI:
-``` bash
-pip install tzara
-```
-
-To launch Tzara, in your terminal, just type:
-```bash
-tzara
-```
-
-Your expected results:
-```bash
-Tzara is online. Type 'exit' to quit.
-
-You: 
-```
 
 ## Manual Installation
 Clone the repo:
@@ -37,9 +20,9 @@ Install Tzara:
 pip install -e .
 ```
 
-Launch Tzara:
-```python
-python -m tzara
+Launch Tzara from your terminal:
+``` bash
+tzara
 ```
 
 Your expected results:
