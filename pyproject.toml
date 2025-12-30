@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tzara"
+version = "0.1.0"
+description = "Tzara is your personal AI assistant"
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [
+  { name = "Suman Pal" }
+]
+
+dependencies = []
+
+[project.scripts]
+tzara = "tzara.interfaces.cli:run_cli"

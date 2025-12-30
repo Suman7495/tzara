@@ -8,6 +8,18 @@ Install via PyPI:
 pip install tzara
 ```
 
+To launch Tzara, in your terminal, just type:
+```bash
+tzara
+```
+
+Your expected results:
+```bash
+Tzara is online. Type 'exit' to quit.
+
+You: 
+```
+
 ## Manual Installation
 Clone the repo:
 ``` python
@@ -19,11 +31,23 @@ Change directory into the repo:
 cd tzara
 ```
 
-Run an example:
-```python
-python examples/tzara_example.py
+Install Tzara:
+
+``` bash
+pip install -e .
 ```
 
+Launch Tzara:
+```python
+python -m tzara
+```
+
+Your expected results:
+```bash
+Tzara is online. Type 'exit' to quit.
+
+You: 
+```
 
 ## Contributing
 
