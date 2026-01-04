@@ -15,4 +15,4 @@ authors = [
 dependencies = ["ollama"]
 
 [project.scripts]
-tzara = "tzara.interfaces.cli:run_cli"
+tzara = "tzara.cli:run_cli"

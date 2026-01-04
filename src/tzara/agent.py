@@ -1,21 +1,50 @@
+"""
+LLM-backed agent for Tzara using Ollama.
+"""
+from typing import Generator
 from ollama import chat
-from ollama import ChatResponse
 
 class Tzara:
-    def __init__(self, model="gemma3"):
-        self._model = model
+    """
+    Core Tzara agent.
 
-    def set_model(self, model):
-        self._model = model
-
-    def handle(self, text):
+    Responsible for:
+    - Sending prompts to the LLM
+    - Streaming responses token-by-token
+    """
+    def __init__(self, model: str="gemma3") -> None:
         """
-        Generator yielding tokens for real-time CLI display.
-        Handles Ollama 'thinking' vs 'content' messages.
+        Initialize the agent.
+
+        Args:
+            model: Ollama model name.
+        """
+        self._model = model
+
+    def set_model(self, model: str) -> None:
+        """
+        Update the LLM model.
+
+        Args:
+            model: New Ollama model name.
+        """
+        self._model = model
+
+    def handle(self, text: str) -> Generator[str, None, None]:
+        """
+        Stream LLM output as tokens.
+
+        Handles Ollama 'thinking' and 'content' messages.
+
+        Args:
+            text: User input prompt.
+
+        Yields:
+            Output tokens as strings.
         """
         stream = chat(
             model=self._model,
-            messages=[{'role': 'user','content': text}], 
+            messages=[{'role': 'user','content': text}],
             stream=True,
         )
 

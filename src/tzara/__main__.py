@@ -1,7 +1,7 @@
-from tzara.interfaces.cli import run_cli
+from tzara import cli
 
 def main():
-    run_cli()
+    cli.run_cli()
 
 if __name__ == "__main__":
     main()
