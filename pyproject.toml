@@ -12,7 +12,10 @@ authors = [
   { name = "Suman Pal" }
 ]
 
-dependencies = ["ollama"]
+dependencies = ["ollama", 
+                "langchain", 
+                "langchain-ollama",
+                ]
 
 [project.scripts]
 tzara = "tzara.cli:run_cli"

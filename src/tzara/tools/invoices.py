@@ -14,7 +14,7 @@ import re
 from datetime import datetime
 from typing import List, Tuple
 
-from tzara.tools import fs, pdf
+from tzara.tools import fs
 
 
 @dataclass

@@ -11,7 +11,7 @@ def run_cli() -> None:
     Continuously prompts the user for input, streams output
     from the agent, and exits cleanly on 'exit' or 'quit'.
     """
-    tzara_agent = agent.Tzara(model="gemma3")
+    tzara_agent = agent.Tzara(model="llama3.1:8b")
 
     print("Tzara is online. Type 'exit' to quit.\n")
 
