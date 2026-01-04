@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/banner.jpg" alt="Tzara banner" width="100%">
+  <img src="assets/banner.png" alt="Tzara banner" width="100%">
 </p>
 
 # Tzara: A Personal AI Agent
