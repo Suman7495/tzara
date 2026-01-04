@@ -4,28 +4,9 @@ LLM-backed agent for Tzara using LangChain 1.2 + LangGraph + Ollama.
 
 from typing import Generator
 from langchain_ollama import ChatOllama
-from langchain.tools import tool
 from langchain.agents import create_agent
-from langchain.messages import SystemMessage
-
-
-@tool
-def get_weather(location: str) -> str:
-    """
-    Get weather information.
-
-    ONLY use this tool if the user explicitly asks about weather.
-    Examples:
-    - "what is the weather in Paris"
-    - "weather in New York"
-
-    Do NOT use for:
-    - greetings
-    - complaints
-    - explanations
-    - meta questions
-    """
-    return f"Weather in {location}: Sunny, 72°F."
+from langchain.messages import SystemMessage, AIMessage
+from tzara.tools import calculator
 
 
 class Tzara:
@@ -41,7 +22,7 @@ class Tzara:
             streaming=True,
         )
 
-        self._tools = [get_weather]
+        self._tools = [calculator.calculator]
 
         system_prompt = SystemMessage(
             content=(
@@ -81,5 +62,6 @@ class Tzara:
             },
             stream_mode="messages",
         ):
-            if hasattr(message, "content") and message.content:
+            # Only stream assistant messages, not tool output
+            if isinstance(message, AIMessage) and message.content:
                 yield message.content
