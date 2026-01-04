@@ -3,15 +3,28 @@ Tzara is a personal AI assistant that helps simplify day-to-day tasks.
 
 It is designed for practical use: reducing mental overhead, clarifying tasks, and helping you stay oriented without turning productivity into a system you have to maintain.
 
-## Dependencies
-Download [Ollama](https://ollama.com/download).
+## Available Tools for Tzara
 
-Install Gemma3 from Ollama. Enter the following in your terminal:
+- [x] Calculator: evaluates mathematical expressions
+
+
+## Dependencies
+Download [Ollama](https://ollama.com/download) and install Ollama onto the available supported platforms (including Windows Subsystem for Linux aka WSL, macOS, and Linux)
+
+
+Fetch available LLM model via `ollama pull <name-of-model>`. 
+
+Particularly, for Tzara, we use `llama3.1:8b`:
 ``` bash
-ollama pull gemma3
+ollama pull llama3.1:8b
 ```
 
-## Manual Installation
+You can check that the model was correctly installed with:
+```bash
+ollama list
+```
+
+## Installation
 Clone the repo:
 ``` python
 git clone https://github.com/Suman7495/tzara.git
@@ -27,6 +40,8 @@ Install Tzara:
 ``` bash
 pip install -e .
 ```
+
+## Run Tzara
 
 Launch Tzara from your terminal:
 ``` bash
