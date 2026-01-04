@@ -1,4 +1,8 @@
-# Tzara
+<p align="center">
+  <img src="assets/banner.jpg" alt="Tzara banner" width="100%">
+</p>
+
+# Tzara: A Personal AI Agent
 Tzara is a personal AI assistant that helps simplify day-to-day tasks.
 
 It is designed for practical use: reducing mental overhead, clarifying tasks, and helping you stay oriented without turning productivity into a system you have to maintain.
