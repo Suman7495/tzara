@@ -1,20 +1,19 @@
 <p align="center">
-  <img src="assets/banner.png" alt="Tzara banner" width="100%">
+  <img src="assets/tzara_banner.png" alt="Tzara banner" width="100%">
 </p>
 
 # Tzara: A Personal AI Agent
-Tzara is a personal AI assistant that helps simplify day-to-day tasks.
+Tzara is an open-source personal AI assistant that helps simplify day-to-day tasks.
 
 It is designed for practical use: reducing mental overhead, clarifying tasks, and helping you stay oriented without turning productivity into a system you have to maintain.
 
-## Available Tools for Tzara
+## Features
 
 - [x] Calculator: evaluates mathematical expressions
 
 
 ## Dependencies
 Download [Ollama](https://ollama.com/download) and install Ollama onto the available supported platforms (including Windows Subsystem for Linux aka WSL, macOS, and Linux)
-
 
 Fetch available LLM model via `ollama pull <name-of-model>`. 
 
@@ -45,7 +44,7 @@ Install Tzara:
 pip install -e .
 ```
 
-## Run Tzara
+## Quickstart
 
 Launch Tzara from your terminal:
 ``` bash
