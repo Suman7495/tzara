@@ -1,7 +1,6 @@
-from tzara import cli
+"""Entry point for ``python -m tzara``."""
 
-def main():
-    cli.run_cli()
+from tzara.cli.run import TzaraCLI
 
 if __name__ == "__main__":
-    main()
+    TzaraCLI.main()

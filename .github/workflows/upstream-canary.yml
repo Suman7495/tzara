@@ -1,0 +1,25 @@
+name: Upstream canary
+
+# Tzara depends on pre-1.0 and experimental APIs (DeepAgents, LangGraph's v3
+# streaming). requirements.lock keeps normal CI stable, so this job runs weekly
+# against the newest releases pyproject.toml allows, to learn about breakage
+# before anyone upgrades the lock.
+
+on:
+  schedule:
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  latest-dependencies:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: make install-latest
+      - run: make check
