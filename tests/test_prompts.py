@@ -20,4 +20,18 @@ def test_instances_do_not_share_the_description_mapping():
 
 
 def test_system_prompt_names_the_assistant():
-    assert Prompts().system.startswith("You are Tzara")
+    assert Prompts().rendered_system().startswith("You are Tzara")
+
+
+def test_the_name_can_be_changed():
+    assert Prompts(assistant_name="Jarvis").rendered_system().startswith("You are Jarvis,")
+
+
+def test_the_placeholder_never_reaches_the_model():
+    assert "{name}" not in Prompts().rendered_system()
+    assert "Tzara" not in Prompts(assistant_name="Jarvis").rendered_system()
+
+
+def test_a_name_containing_braces_is_inserted_literally():
+    rendered = Prompts(assistant_name="{name} {0}").rendered_system()
+    assert rendered.startswith("You are {name} {0},")

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import io
+import threading
+import time
 from collections.abc import Iterator, Sequence
 from typing import Any, ClassVar
 
@@ -107,6 +109,92 @@ class FakeAgent:
         self.events.append("interrupt")
 
 
+class StreamingFakeAgent:
+    """Stands in for :class:`tzara.agent.Tzara` in server tests.
+
+    Like the real agent it can be cancelled from another thread: ``cancel()``
+    makes a reply in progress fail, as closing the model's connection does.
+
+    Attributes:
+        created: Every instance created, in order.
+        tokens: Pieces ``handle`` yields.
+        warm_up_error: Raised by ``warm_up`` when set.
+        warm_up_gate: ``warm_up`` waits for this event when set.
+        create_error: Raised by the constructor when set.
+        reply_gate: A reply pauses after its first piece until this is set.
+        reply_error: Raised partway through a reply when set.
+        conversation: What ``history`` returns.
+    """
+
+    created: ClassVar[list[StreamingFakeAgent]] = []
+    tokens: ClassVar[list[str]] = ["Hello", " ", "there"]
+    warm_up_error: ClassVar[BaseException | None] = None
+    warm_up_gate: ClassVar[threading.Event | None] = None
+    create_error: ClassVar[BaseException | None] = None
+    reply_gate: ClassVar[threading.Event | None] = None
+    reply_error: ClassVar[BaseException | None] = None
+    conversation: ClassVar[list[Any]] = []
+
+    def __init__(self, model: str | None = None, config: Any = None, memory: Any = None) -> None:
+        create_error = type(self).create_error
+        if create_error is not None:
+            raise create_error
+        self.model = model or "ollama:fake"
+        self.config = config
+        self.memory = memory
+        self.events: list[str] = []
+        self.messages: list[str] = []
+        self.cancelled = threading.Event()
+        type(self).created.append(self)
+
+    @classmethod
+    def isolated(cls) -> type[StreamingFakeAgent]:
+        """Return a fresh subclass so tests don't share class-level state."""
+        return type(
+            "IsolatedStreamingFakeAgent",
+            (cls,),
+            {"created": [], "tokens": list(cls.tokens), "conversation": []},
+        )
+
+    def history(self) -> list[Any]:
+        return list(type(self).conversation)
+
+    def warm_up(self) -> None:
+        self.events.append("warm_up")
+        gate = type(self).warm_up_gate
+        if gate is not None:
+            gate.wait(timeout=10)
+        error = type(self).warm_up_error
+        if error is not None:
+            raise error
+
+    def handle(self, text: str) -> Iterator[str]:
+        self.messages.append(text)
+        for position, token in enumerate(type(self).tokens):
+            self._check_cancelled()
+            gate = type(self).reply_gate
+            if position == 1 and gate is not None:
+                while not gate.is_set():
+                    self._check_cancelled()
+                    time.sleep(0.01)
+            yield token
+            reply_error = type(self).reply_error
+            if position == 1 and reply_error is not None:
+                raise reply_error
+
+    def cancel(self) -> None:
+        self.events.append("cancel")
+        self.cancelled.set()
+
+    def interrupt(self) -> None:
+        self.events.append("interrupt")
+        self.cancelled.clear()
+
+    def _check_cancelled(self) -> None:
+        if self.cancelled.is_set():
+            raise ConnectionError("connection closed")
+
+
 class RecordingFakeModel(GenericFakeChatModel):
     """Fake chat model that records the tools and messages it is given."""
 
@@ -163,3 +251,40 @@ class PromptAwareFakeModel(RecordingFakeModel):
     ) -> Iterator[ChatGenerationChunk]:
         self.seen_messages.append(messages)
         yield ChatGenerationChunk(message=AIMessageChunk(content=self._reply(messages)))
+
+
+class FakeClock:
+    """Time that only moves when something sleeps, so waiting costs nothing."""
+
+    def __init__(self) -> None:
+        self.now = 0.0
+
+    def __call__(self) -> float:
+        return self.now
+
+    def sleep(self, seconds: float) -> None:
+        self.now += seconds
+
+
+class FakeRunner:
+    """Stands in for running other programs: records each command, answers from a handler.
+
+    ``handler`` receives the command and returns a :class:`CommandResult`, or ``None`` to
+    use the default of success.
+    """
+
+    def __init__(self, handler: Any = None) -> None:
+        self.calls: list[list[str]] = []
+        self._handler = handler
+
+    def run(self, args: Sequence[str]) -> Any:
+        from tzara.installer.commands import CommandResult
+
+        command = list(args)
+        self.calls.append(command)
+        result = self._handler(command) if self._handler else None
+        return result or CommandResult(0)
+
+    def commands(self) -> list[str]:
+        """The first word of each command run, in order."""
+        return [call[0] for call in self.calls]

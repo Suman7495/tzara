@@ -1,6 +1,5 @@
 import logging
 import os
-import runpy
 import signal
 import sys
 from pathlib import Path
@@ -316,62 +315,3 @@ class TestSigint:
         thread.start()
         thread.join()
         assert results == [True]
-
-
-class TestMain:
-    def test_invalid_environment_exits_with_status_2(self, monkeypatch, capsys):
-        monkeypatch.setenv("TZARA_OLLAMA_NUM_CTX", "lots")
-        with pytest.raises(SystemExit) as exit_info:
-            TzaraCLI.main()
-
-        assert exit_info.value.code == 2
-        assert "TZARA_OLLAMA_NUM_CTX" in capsys.readouterr().err
-
-    def test_runs_the_chat_with_the_environment_config(self, monkeypatch):
-        monkeypatch.setenv("TZARA_MODEL", "ollama:mistral")
-        started = []
-        monkeypatch.setattr(TzaraCLI, "run", lambda self: started.append(self._config.model))
-
-        TzaraCLI.main()
-        assert started == ["ollama:mistral"]
-
-    def test_logging_is_installed_before_the_chat_starts(self, monkeypatch, tmp_path):
-        from tzara.logs import LogConfigurator
-
-        log_file = tmp_path / "tzara.log"
-        monkeypatch.setenv("TZARA_LOG_FILE", str(log_file))
-        monkeypatch.setenv("TZARA_LOG_LEVEL", "DEBUG")
-        seen = {}
-
-        def fake_install(self):
-            seen["settings"] = self._settings
-            return log_file
-
-        monkeypatch.setattr(LogConfigurator, "install", fake_install)
-        monkeypatch.setattr(TzaraCLI, "run", lambda self: seen.update(path=self._log_path))
-
-        TzaraCLI.main()
-
-        assert seen["settings"].level == "DEBUG"
-        assert seen["settings"].file == log_file
-        assert seen["path"] == log_file
-
-    def test_startup_is_logged(self, monkeypatch, caplog):
-        from tzara.logs import LogConfigurator
-
-        monkeypatch.setattr(LogConfigurator, "install", lambda self: None)
-        monkeypatch.setattr(TzaraCLI, "run", lambda self: None)
-        monkeypatch.setenv("TZARA_MODEL", "ollama:mistral")
-
-        with caplog.at_level(logging.INFO, logger="tzara"):
-            TzaraCLI.main()
-        assert "tzara starting: model=ollama:mistral" in caplog.text
-
-
-class TestModuleEntryPoint:
-    def test_python_dash_m_tzara_runs_the_cli(self, monkeypatch):
-        started = []
-        monkeypatch.setattr(TzaraCLI, "main", classmethod(lambda cls: started.append(cls)))
-
-        runpy.run_module("tzara", run_name="__main__")
-        assert started == [TzaraCLI]

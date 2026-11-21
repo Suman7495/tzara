@@ -13,169 +13,122 @@ It's fully local, supports multiple models, comes with a calculator tool, and is
 
 ## Features
 
-### Core
 - [x] **Lightweight & low footprint** — Small Python core with fast startup and low memory usage, runs comfortably on a personal laptop
 - [x] **Multi-Model Support** — Switch between Ollama, Anthropic, OpenAI, and Google models at runtime
 - [x] **Conversation Memory** — Remembers earlier messages across turns, interrupts and model switches
+- [x] **Local API** — Background HTTP server with streaming replies (loopback-only, token-protected)
+- [x] **macOS app** — Tap Control+Option anywhere for a small chat box right at your pointer
 
-## Prerequisites
+## Install
 
-### For Local Models (Recommended)
-Download and install [Ollama](https://ollama.com/download) for your platform (macOS, Linux, WSL, Windows).
-
-Pull a model:
 ```bash
-ollama pull qwen3:8b  # Default model for Tzara (about 5 GB)
+curl -fsSL https://raw.githubusercontent.com/Suman7495/tzara/main/install.sh | sh
 ```
 
-`qwen3:8b` calls tools reliably and runs well on a 16 GB laptop. `llama3.1:8b` also works but
-is noticeably worse at tool calling.
+## Usage
 
-Verify installation:
+
+## Uninstallion
+`sh install.sh --uninstall` removes the app, login items, server and command. It leaves Ollama, its models and your logs.
+
+
+## For developers
+
+The one-liner works for you too. To hack on Tzara instead:
+
 ```bash
-ollama list
+git clone https://github.com/Suman7495/tzara.git && cd tzara
+make install                      # exact tested versions, plus dev tools
+tzara setup --no-service --no-app # just Ollama and the model
+make app                          # build the app yourself (needs the Command Line Tools)
 ```
 
-### For Cloud Models (Optional)
-Set API keys in your environment:
-```bash
-export ANTHROPIC_API_KEY=your_key       # For Claude models
-export OPENAI_API_KEY=your_key          # For GPT models
-export GOOGLE_API_KEY=your_key          # For Gemini models
-```
+Skip the login service while developing: it would hold port 8927 (set `TZARA_SERVER_PORT` to run a second server). `tzara setup` fetches the app matching the installed version, so it needs a published release; `make app` builds your own.
 
-## Installation
-
-Clone the repository:
-```bash
-git clone https://github.com/Suman7495/tzara.git
-cd tzara
-```
-
-Install Tzara in development mode, with the exact dependency versions that were tested
-(includes the linters and test tools):
-```bash
-make install
-```
-
-Or, with the newest versions `pyproject.toml` allows:
-```bash
-pip install -e .
-```
+**Releasing:** bump `version` in `pyproject.toml`, then `git tag vX.Y.Z && git push origin vX.Y.Z`. The release workflow checks the tag matches, tests and builds the app, and publishes `Tzara.app.zip` with its checksum.
 
 ## Quickstart
 
-Start Tzara:
 ```bash
 tzara
 ```
+Tzara loads the model (a spinner shows, about 12 s when cold), then you chat. Commands:
 
-Tzara first loads the model, which shows a `loading model...` spinner. Once the model is ready you'll see:
-```
-Tzara is online. Type /help for commands or start chatting.
+| Command | |
+|---------|-|
+| `/list-models` | Show the known models by provider |
+| `/set-model <provider:model>` | Switch model; the conversation carries over. If it can't load, the current one is kept |
+| `/current-model` | Show the active model |
+| `/new` | Forget the conversation and start again |
+| `/help`, `/exit` | |
 
-You: 
-```
+Models are written `provider:model-name`, e.g. `ollama:qwen3:8b`, `anthropic:claude-haiku-4-5`, `openai:gpt-4o`, `google_genai:gemini-3.5-flash`. Any model LangChain can load works.
 
-Start chatting!
+## macOS app
 
-### Commands
-You can use the following commands in the chat:
-- [x] `/help` — Show available commands
-- [x] `/list-models` — Browse all supported models
-- [x] `/set-model <model>` — Switch models at runtime
-- [x] `/new` — Start a new conversation
-- [x] `/current-model` — Check active model
-- [x] `/exit` — Exit gracefully
+A menu-bar app that opens a small chat box beside your mouse, over whatever you're doing, including full-screen apps. It talks to the local server below.
 
+Installed by `tzara setup`; to build it yourself run `make app` (needs `xcode-select --install`) and open `app/build/Tzara.app`.
 
-### Available Models
+- **Tap Control+Option** (press both, release, touch nothing else) to open or close the box. It opens with the input line under your pointer, so you can type straight away; your previous chat is shown. **×** or **Esc** closes it.
+- **Pencil**: new conversation. **Gear → Settings**: pick the model from a dropdown (or type any `provider:model-name`), rename, check the hotkey and server, quit.
+- **Double-click the name** at the top to rename it. The assistant uses the new name when it describes itself, and remembers it.
+- The menu-bar icon opens the chat, shows whether the hotkey is active, and quits.
 
-Tzara lists 13 models across 4 providers, and accepts any `provider:model-name` that
-LangChain can load:
+The hotkey check looks only for the Control+Option tap and doesn't record what you type. Each update or rebuild re-asks for Input Monitoring unless you sign with a stable identity: create a code-signing certificate in Keychain Access (*Certificate Assistant → Create a Certificate*) and run `TZARA_SIGN_IDENTITY="Your Cert" make app`. The app's log is `~/Library/Logs/tzara/app.log`. `make app-test` runs its tests.
 
-**Ollama** (local, no API key needed):
-- `ollama:qwen3:8b` — Default, fast, reliable tool calling
-- `ollama:llama3.1:8b` — Works, weaker tool calling
-- `ollama:llama3.1:70b` — Most capable, requires 40GB+ RAM
-- `ollama:mistral` — Efficient alternative
+## Local server
 
-**Anthropic Claude**:
-- `anthropic:claude-opus-4-8` — Most capable
-- `anthropic:claude-opus-4-7`
-- `anthropic:claude-sonnet-4-6` — Balanced
-- `anthropic:claude-haiku-4-5` — Fast & cheap
-
-**OpenAI**:
-- `openai:gpt-4o` — Advanced reasoning
-- `openai:gpt-4-turbo`
-- `openai:gpt-3.5-turbo` — Fast
-
-**Google Gemini**:
-- `google_genai:gemini-3.5-flash` — Fast
-- `google_genai:gemini-3.1-pro` — Powerful
-
-### Switching Models at Runtime
-
-Use `/set-model <provider:model-name>` to switch without restarting:
-```
-You: /set-model anthropic:claude-haiku-4-5
-Switched → anthropic:claude-haiku-4-5
+```bash
+tzara start     # run in the background; returns in a couple of seconds while the model loads
+tzara status    # loading, ready or failed
+tzara stop      # clean, even mid-reply
+tzara serve     # or run it in this terminal
 ```
 
-The new model is loaded first, behind a `switching model...` spinner, and the conversation carries
-over. If it can't be loaded (wrong name, model not pulled, missing API key), Tzara keeps the current
-model and says why.
-Run `/list-models` to see the known models.
+It listens only on `127.0.0.1`. The server keeps `token` and `server.json` (`{"host", "port", "pid"}`) in `~/Library/Application Support/tzara/` (`~/.local/share/tzara/` on Linux, `%APPDATA%\tzara\` on Windows; `TZARA_DATA_DIR` overrides). Everything below `/v1` except `health` needs `Authorization: Bearer <token>`.
+
+| Endpoint | |
+|----------|-|
+| `GET /v1/health` | `{"status": "ok"}`; no token |
+| `GET /v1/status` | `{"state", "model", "name", "busy", "error"}` |
+| `GET /v1/models` | `{"providers": [{"name", "models": [{"id", "description"}]}]}` |
+| `GET /v1/conversation` | `{"messages": [{"role": "user"\|"assistant", "text"}]}` |
+| `POST /v1/chat` `{"message"}` | Streams the reply as server-sent events |
+| `POST /v1/interrupt` | Cancel the reply being written (`204`) |
+| `POST /v1/conversation/new` | Forget the conversation |
+| `PUT /v1/model` `{"model"}` | Switch model (about 15 s) |
+| `PUT /v1/name` `{"name"}` | Rename the assistant, 1–40 characters on one line (about 10 s) |
+
+**Chat events:** `event: token` with `{"text"}` (concatenate them), then `done` with `{"first_token_seconds", "characters"}`, or `error` with `{"message"}`. After 10 s of silence the server sends a `: keep-alive` comment line; ignore it. Closing the connection cancels the reply.
+
+**Status codes:** `409` another reply is being written, `503` the model isn't ready, `413`/`422` rejected input, `502` a model or name change failed (the old one stays), `401` bad token.
+
+**Security:** a local port is reachable by any program and any web page, so requests must carry the token, must not carry a browser `Origin` header (browser clients are refused), and must be addressed to a loopback `Host`.
+
+The conversation lives in the server's memory, until you start a new one or stop the server. It survives interrupts and model switches, and old turns are summarized rather than cut off as it nears the context window.
 
 ## Configuration
 
-Defaults live in `TzaraConfig` ([src/tzara/config.py](src/tzara/config.py)) and can be
-overridden with environment variables:
+Defaults live in [`TzaraConfig`](src/tzara/config.py). Override with environment variables:
 
 | Variable | Default | Meaning |
 |----------|---------|---------|
-| `TZARA_MODEL` | `ollama:qwen3:8b` | Model to start with, as `provider:model-name` |
-| `TZARA_OLLAMA_NUM_CTX` | `16384` | Context window. Ollama's default of 4096 truncates the prompt |
-| `TZARA_OLLAMA_KEEP_ALIVE` | `30m` | How long Ollama keeps the model loaded while idle |
+| `TZARA_MODEL` | `ollama:qwen3:8b` | Model to start with |
+| `TZARA_OLLAMA_NUM_CTX` | `16384` | Context window (Ollama's default of 4096 truncates the prompt) |
+| `TZARA_OLLAMA_KEEP_ALIVE` | `30m` | How long Ollama keeps the model loaded while idle; longer avoids reload waits but holds 5-8 GB |
 | `TZARA_OLLAMA_REASONING` | `false` | Let thinking models such as Qwen3 think first; slower |
 | `TZARA_OLLAMA_RESERVED_TOKENS` | `4096` | Part of the window kept for the prompt and reply; the rest is the history budget |
 | `TZARA_LOG_LEVEL` | `INFO` | `DEBUG`, `INFO`, `WARNING`, `ERROR` or `CRITICAL` |
-| `TZARA_LOG_FILE` | platform default | Where to write the log |
+| `TZARA_LOG_FILE` | platform default | `~/Library/Logs/tzara/tzara.log`, `~/.local/state/tzara/tzara.log`, or `%LOCALAPPDATA%\tzara\Logs\tzara.log` |
+| `TZARA_SERVER_PORT` | `8927` | Server port, on `127.0.0.1` |
+| `TZARA_DATA_DIR` | platform default | Where the server keeps its token, address and name |
 
-```bash
-TZARA_MODEL=ollama:llama3.1:8b tzara
-```
-
-A longer `TZARA_OLLAMA_KEEP_ALIVE` avoids the model-loading wait after long breaks, at the cost of
-holding the model's memory (5-8 GB for an 8B model) while Tzara is idle.
-
-### Memory
-
-Tzara remembers the conversation, and any files it wrote, until you exit or type `/new`. History is
-kept in memory only; nothing is saved to disk. It carries over when you switch models and survives
-Ctrl+C. When a long conversation nears the model's context window, older turns are summarized
-instead of being silently cut off.
-
-### Logs
-
-Tzara writes a rotating log file instead of printing to the chat:
-
-| Platform | Default location |
-|----------|------------------|
-| macOS | `~/Library/Logs/tzara/tzara.log` |
-| Linux | `~/.local/state/tzara/tzara.log` (or under `$XDG_STATE_HOME`) |
-| Windows | `%LOCALAPPDATA%\tzara\Logs\tzara.log` |
-
-When an error appears in the chat it says where the log is, and the full traceback is in the file.
-At the default level the log has startup, model loads, switches and per-turn timing, but **not what
-you or Tzara said**; message text is only logged with `TZARA_LOG_LEVEL=DEBUG`.
+Logs go to a rotating file, never the chat; errors in the chat say where. They hold startup, model loads and per-turn timing, **not what you or Tzara said** (that needs `DEBUG`).
 
 ## Adding Custom Tools
 
-Tools are small `BaseTool` classes with a typed input schema.
-
-**Create a new tool** (`src/tzara/tools/weather.py`):
+Tools are small `BaseTool` classes with a typed input schema. Create one (`src/tzara/tools/weather.py`):
 ```python
 from langchain_core.tools import BaseTool
 from pydantic import BaseModel, Field
@@ -198,51 +151,30 @@ class Weather(BaseTool):
         """Return the weather for ``city`` as text."""
         return f"Sunny in {city}, 72°F"
 ```
-
-**Register the tool** in `Tzara.__init__` in `src/tzara/agent/agent.py`:
+Register it in `Tzara.__init__` (`src/tzara/agent/agent.py`):
 ```python
-from tzara.tools.calculator import Calculator
-from tzara.tools.weather import Weather
-
 self._tools = [Calculator(), Weather()]
 ```
-
-That's it! Tzara automatically decides when to use tools based on context. Add a test in
-`tests/` and run `make check`.
-
+Tzara decides when to use it. Add a test in `tests/` and run `make check`.
 
 ## Project Structure
 
 ```
 tzara/
 ├── src/tzara/
-│   ├── config.py         # All tunable settings (env overrides: TZARA_*)
-│   ├── prompts.py        # System prompt and tool descriptions
-│   ├── logs.py           # Log file setup
-│   ├── agent/            # Deep Agent, conversation memory, harness setup, model factory
-│   ├── cli/              # Chat loop and slash commands
-│   └── tools/
-│       ├── calculator.py # Safe math tool
-│       └── ...           # Add custom tools here
+│   ├── config.py, prompts.py, logs.py, paths.py   # settings, prompts, logging, file locations
+│   ├── agent/            # Deep Agent, conversation memory, model factory
+│   ├── cli/              # `tzara` command, chat loop, slash commands
+│   ├── server/           # Local HTTP server (FastAPI) and its background manager
+│   ├── installer/        # `tzara setup`: Ollama, login service, app download
+│   └── tools/            # Calculator, and where custom tools go
+├── install.sh            # the one-line installer
+├── app/                  # macOS app (Swift): hotkey, chat box, settings
 ├── tests/                # pytest suite (runs offline)
 ├── .github/workflows/    # CI
 ├── CLAUDE.md             # Developer guide
-├── README.md             # This file
 ├── pyproject.toml        # Dependency ranges, linter and test configuration
 └── requirements.lock     # Exact tested dependency versions
-```
-
-## Commands
-
-Type these commands within the chat:
-
-```
-/help           Show all available commands
-/list-models    Show all available models
-/set-model      Switch to a different model
-/current-model  Show active model
-/new            Start a new conversation
-/exit           Exit Tzara
 ```
 
 ## Learn More
@@ -251,21 +183,10 @@ Type these commands within the chat:
 - [LangGraph](https://python.langchain.com/docs/langgraph/) — Orchestration primitives
 - [LangChain Tools](https://python.langchain.com/docs/modules/tools/) — Tool building
 - [Model Context Protocol](https://modelcontextprotocol.io/) — Integration standard
-- [Rich](https://rich.readthedocs.io/) — Terminal output styling
 
 ## Contributing
 
-Contributions are welcome! Areas of interest:
-- New tools (weather, APIs, databases, etc.)
-- MCP server integrations
-- Documentation and examples
-- Bug fixes and improvements
-- Feature suggestions
-
-Run `make check` (ruff, pylint, mypy and the test suite) before opening a pull request; CI runs the
-same checks. See [CLAUDE.md](CLAUDE.md) for the code conventions, dependency lockfile and git hooks.
-
-Open an issue or discussion to get started.
+Contributions are welcome: new tools, MCP integrations, docs, fixes. Run `make check` (ruff, pylint, mypy, pytest) before opening a pull request; CI runs the same. See [CLAUDE.md](CLAUDE.md) for conventions, the dependency lockfile and git hooks.
 
 ## License
 

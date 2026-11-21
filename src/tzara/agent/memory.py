@@ -5,9 +5,23 @@ from __future__ import annotations
 import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
+from dataclasses import dataclass
 
 from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.memory import InMemorySaver
+
+
+@dataclass(frozen=True)
+class HistoryMessage:
+    """One thing said in the conversation.
+
+    Attributes:
+        role: ``user`` or ``assistant``.
+        text: What was said.
+    """
+
+    role: str
+    text: str
 
 
 class ConversationMemory:

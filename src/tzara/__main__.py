@@ -1,6 +1,6 @@
 """Entry point for ``python -m tzara``."""
 
-from tzara.cli.run import TzaraCLI
+from tzara.cli.launcher import Launcher
 
 if __name__ == "__main__":
-    TzaraCLI.main()
+    raise SystemExit(Launcher.main())

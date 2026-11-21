@@ -83,6 +83,92 @@ class LogSettings:
 
 
 @dataclass(frozen=True)
+class ServerSettings:
+    """Settings for the local HTTP server that clients such as the overlay use.
+
+    The server only ever listens on the loopback address; that is not
+    configurable, because anything else would expose the agent to the network.
+
+    Attributes:
+        port: TCP port on ``127.0.0.1``.
+        max_message_chars: Longest chat message the server accepts.
+        max_name_chars: Longest name the assistant may be given.
+        startup_timeout: Seconds ``tzara start`` waits for the server to answer.
+        stop_timeout: Seconds ``tzara stop`` waits for the server to exit.
+        heartbeat_seconds: How long a reply stream may stay silent before the server
+            sends a keep-alive comment, so clients with a read timeout don't drop a
+            healthy connection while the model is thinking.
+        data_dir: Where the token and server files live. ``None`` means the
+            platform's standard directory.
+    """
+
+    HOST: ClassVar[str] = "127.0.0.1"
+
+    port: int = 8927
+    max_message_chars: int = 20_000
+    max_name_chars: int = 40
+    startup_timeout: float = 30.0
+    stop_timeout: float = 15.0
+    heartbeat_seconds: float = 10.0
+    data_dir: Path | None = None
+
+    def __post_init__(self) -> None:
+        """Check that the port and heartbeat interval are valid.
+
+        Raises:
+            ConfigError: If ``port`` is outside 1-65535, or ``heartbeat_seconds``
+                is not positive.
+        """
+        if not 0 < self.port < 65536:
+            raise ConfigError(f"port must be between 1 and 65535, got {self.port}")
+        if self.heartbeat_seconds <= 0:
+            raise ConfigError(f"heartbeat_seconds must be positive, got {self.heartbeat_seconds}")
+
+
+@dataclass(frozen=True)
+class InstallerSettings:  # pylint: disable=too-many-instance-attributes
+    """Where ``tzara setup`` gets things from and puts them.
+
+    Attributes:
+        ollama_url: Address of the local Ollama server.
+        ollama_download_url: Official macOS download of the Ollama app.
+        ollama_app: Where the Ollama app lives.
+        release_url: Where release files are published. ``{version}`` and ``{asset}``
+            are filled in; the app is fetched by Tzara's own version so the two always
+            speak the same protocol.
+        app_asset: Name of the zipped macOS app in a release.
+        app_name: Name of the app bundle.
+        app_dir: Where to put the app. ``None`` means ``~/Applications``.
+        launch_agents_dir: Where login jobs go. ``None`` means ``~/Library/LaunchAgents``.
+        service_label: launchd label of the server's login job.
+        login_label: launchd label of the job that opens the app at login.
+        wait_seconds: How long to wait for Ollama or the server to come up.
+    """
+
+    ollama_url: str = "http://127.0.0.1:11434"
+    ollama_download_url: str = "https://ollama.com/download/Ollama-darwin.zip"
+    ollama_app: Path = Path("/Applications/Ollama.app")
+    release_url: str = "https://github.com/Suman7495/tzara/releases/download/v{version}/{asset}"
+    app_asset: str = "Tzara.app.zip"
+    app_name: str = "Tzara.app"
+    app_dir: Path | None = None
+    launch_agents_dir: Path | None = None
+    service_label: str = "ai.telekinesis.tzara.server"
+    login_label: str = "ai.telekinesis.tzara.app"
+    wait_seconds: float = 90.0
+
+    def __post_init__(self) -> None:
+        """Check that the release address can name a version and a file.
+
+        Raises:
+            ConfigError: If ``release_url`` lacks ``{version}`` or ``{asset}``.
+        """
+        for placeholder in ("{version}", "{asset}"):
+            if placeholder not in self.release_url:
+                raise ConfigError(f"release_url must contain {placeholder}")
+
+
+@dataclass(frozen=True)
 class CLISettings:  # pylint: disable=too-many-instance-attributes
     """Text shown by the command-line interface.
 
@@ -113,6 +199,8 @@ class TzaraConfig:
         prompts: Prompts and tool descriptions.
         cli: Text shown by the CLI.
         log: Logging settings.
+        server: Settings for the local HTTP server.
+        installer: Where ``tzara setup`` fetches and installs things.
         harness_providers: Providers the DeepAgents harness profile is
             registered for.
         warmup_message: Throwaway message used to load the model and prime
@@ -124,6 +212,8 @@ class TzaraConfig:
     prompts: Prompts = field(default_factory=Prompts)
     cli: CLISettings = field(default_factory=CLISettings)
     log: LogSettings = field(default_factory=LogSettings)
+    server: ServerSettings = field(default_factory=ServerSettings)
+    installer: InstallerSettings = field(default_factory=InstallerSettings)
     harness_providers: tuple[str, ...] = ("ollama", "anthropic", "openai", "google_genai")
     warmup_message: str = "hi"
 
@@ -133,7 +223,9 @@ class TzaraConfig:
 
         Recognised variables: ``TZARA_MODEL``, ``TZARA_OLLAMA_NUM_CTX``,
         ``TZARA_OLLAMA_KEEP_ALIVE``, ``TZARA_OLLAMA_REASONING``,
-        ``TZARA_OLLAMA_RESERVED_TOKENS``, ``TZARA_LOG_LEVEL`` and ``TZARA_LOG_FILE``.
+        ``TZARA_OLLAMA_RESERVED_TOKENS``, ``TZARA_LOG_LEVEL``, ``TZARA_LOG_FILE``,
+        ``TZARA_SERVER_PORT``, ``TZARA_DATA_DIR``, ``TZARA_RELEASE_URL`` and
+        ``TZARA_APP_DIR``.
 
         Args:
             env: Variables to read. Defaults to ``os.environ``.
@@ -161,6 +253,16 @@ class TzaraConfig:
                 defaults.log,
                 level=reader.choice("LOG_LEVEL", defaults.log.level, LogSettings.LEVELS),
                 file=reader.path("LOG_FILE", defaults.log.file),
+            ),
+            server=replace(
+                defaults.server,
+                port=reader.integer("SERVER_PORT", defaults.server.port),
+                data_dir=reader.path("DATA_DIR", defaults.server.data_dir),
+            ),
+            installer=replace(
+                defaults.installer,
+                release_url=reader.text("RELEASE_URL", defaults.installer.release_url),
+                app_dir=reader.path("APP_DIR", defaults.installer.app_dir),
             ),
         )
 

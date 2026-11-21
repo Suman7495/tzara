@@ -1,0 +1,37 @@
+name: Release
+
+# Pushing a tag such as v0.1.0 publishes the macOS app for that version. `tzara setup` downloads
+# the app that matches the Tzara version it is running, so the app and the server always agree.
+#
+#   1. bump `version` in pyproject.toml
+#   2. git tag v0.1.0 && git push origin v0.1.0
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  app:
+    name: Build and publish the macOS app
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: The tag must match the version in pyproject.toml
+        run: |
+          version=$(python -c "import tomllib; print(tomllib.load(open('pyproject.toml', 'rb'))['project']['version'])")
+          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "Tag $GITHUB_REF_NAME does not match version $version in pyproject.toml" >&2
+            exit 1
+          fi
+      - run: make app-test
+      - run: make app-release
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" app/build/Tzara.app.zip app/build/Tzara.app.zip.sha256 --generate-notes

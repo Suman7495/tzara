@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import logging
 import signal
-import sys
 import threading
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
@@ -16,8 +15,7 @@ from rich.markup import escape
 from tzara.agent import Tzara
 from tzara.agent.memory import ConversationMemory
 from tzara.cli.commands import BuiltinCommands, CommandRegistry, ExitRequested
-from tzara.config import ConfigError, TzaraConfig
-from tzara.logs import LogConfigurator
+from tzara.config import TzaraConfig
 
 logger = logging.getLogger(__name__)
 
@@ -58,24 +56,6 @@ class TzaraCLI:
         self._agent: Tzara | None = None
         self._registry = CommandRegistry(self._console)
         BuiltinCommands(self._registry, self._console, self)
-
-    @classmethod
-    def main(cls) -> None:
-        """Run the CLI. This is the ``tzara`` console-script entry point."""
-        try:
-            config = TzaraConfig.from_env()
-        except ConfigError as error:
-            print(f"tzara: {error}", file=sys.stderr)
-            raise SystemExit(2) from error
-
-        log_path = LogConfigurator(config.log).install()
-        logger.info(
-            "tzara starting: model=%s, num_ctx=%d, log level=%s",
-            config.model,
-            config.ollama.num_ctx,
-            config.log.level,
-        )
-        cls(config=config, log_path=log_path).run()
 
     @property
     def current_model(self) -> str:

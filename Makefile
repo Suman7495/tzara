@@ -1,4 +1,4 @@
-.PHONY: install install-latest lock upgrade format lint typecheck test check
+.PHONY: install install-latest lock upgrade format lint typecheck test check app app-test app-release
 
 # Install the exact versions in requirements.lock (what CI and the tests use).
 install:
@@ -35,3 +35,17 @@ test:
 	pytest --cov --cov-report=term-missing
 
 check: lint typecheck test
+
+# The macOS app (Swift). Needs the Command Line Tools: xcode-select --install
+app:
+	app/scripts/build_app.sh
+
+app-test:
+	cd app && swift test
+
+# The files a release publishes, which `tzara setup` downloads: the zipped app and its checksum.
+app-release: app
+	cd app/build && rm -f Tzara.app.zip Tzara.app.zip.sha256 \
+		&& ditto -c -k --keepParent Tzara.app Tzara.app.zip \
+		&& shasum -a 256 Tzara.app.zip > Tzara.app.zip.sha256
+

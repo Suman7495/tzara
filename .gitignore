@@ -211,3 +211,8 @@ __marimo__/
 
 # VS Code (personal editor settings)
 .vscode/
+
+# macOS app (Swift)
+app/.build/
+app/build/
+.swiftpm/

@@ -44,3 +44,11 @@ jobs:
       # changes it when pyproject.toml's dependencies changed without a relock.
       - run: make lock
       - run: git diff --exit-code requirements.lock
+
+  app:
+    name: macOS app tests
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: make app-test
+

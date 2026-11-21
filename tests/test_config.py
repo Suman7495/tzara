@@ -3,7 +3,15 @@ from pathlib import Path
 
 import pytest
 
-from tzara.config import ConfigError, EnvReader, LogSettings, OllamaSettings, TzaraConfig
+from tzara.config import (
+    ConfigError,
+    EnvReader,
+    InstallerSettings,
+    LogSettings,
+    OllamaSettings,
+    ServerSettings,
+    TzaraConfig,
+)
 
 
 def test_defaults_match_documented_values():
@@ -105,3 +113,69 @@ class TestLogSettings:
 
     def test_blank_file_means_the_default_location(self):
         assert TzaraConfig.from_env({"TZARA_LOG_FILE": "  "}).log.file is None
+
+
+class TestServerSettings:
+    def test_defaults(self):
+        settings = ServerSettings()
+        assert settings.port == 8927
+        assert settings.data_dir is None
+
+    def test_a_name_may_be_forty_characters_long(self):
+        assert ServerSettings().max_name_chars == 40
+
+    def test_the_server_only_listens_on_loopback(self):
+        assert ServerSettings.HOST == "127.0.0.1"
+
+    def test_port_and_data_dir_come_from_the_environment(self, tmp_path):
+        config = TzaraConfig.from_env(
+            {"TZARA_SERVER_PORT": "9100", "TZARA_DATA_DIR": str(tmp_path)}
+        )
+        assert config.server.port == 9100
+        assert config.server.data_dir == tmp_path
+
+    @pytest.mark.parametrize("port", [0, 65536, -1])
+    def test_a_port_outside_the_valid_range_is_rejected(self, port):
+        with pytest.raises(ConfigError, match="port"):
+            ServerSettings(port=port)
+
+    @pytest.mark.parametrize("seconds", [0, -1.5])
+    def test_a_non_positive_heartbeat_is_rejected(self, seconds):
+        with pytest.raises(ConfigError, match="heartbeat_seconds"):
+            ServerSettings(heartbeat_seconds=seconds)
+
+    def test_an_environment_port_outside_the_range_is_rejected(self):
+        with pytest.raises(ConfigError, match="port"):
+            TzaraConfig.from_env({"TZARA_SERVER_PORT": "70000"})
+
+
+class TestInstallerSettings:
+    def test_the_release_address_names_a_version_and_a_file(self):
+        url = InstallerSettings().release_url.format(version="1.2.3", asset="Tzara.app.zip")
+        assert url == "https://github.com/Suman7495/tzara/releases/download/v1.2.3/Tzara.app.zip"
+
+    @pytest.mark.parametrize(
+        "url", ["https://x.test/{version}", "https://x.test/{asset}", "https://x.test/plain"]
+    )
+    def test_a_release_address_that_cannot_name_both_is_rejected(self, url):
+        with pytest.raises(ConfigError, match="release_url"):
+            InstallerSettings(release_url=url)
+
+    def test_the_release_address_and_app_folder_come_from_the_environment(self, tmp_path):
+        config = TzaraConfig.from_env(
+            {
+                "TZARA_RELEASE_URL": "https://fork.test/{version}/{asset}",
+                "TZARA_APP_DIR": str(tmp_path),
+            }
+        )
+        assert config.installer.release_url == "https://fork.test/{version}/{asset}"
+        assert config.installer.app_dir == tmp_path
+
+    def test_an_environment_release_address_without_placeholders_is_rejected(self):
+        with pytest.raises(ConfigError, match="release_url"):
+            TzaraConfig.from_env({"TZARA_RELEASE_URL": "https://fork.test/nothing"})
+
+    def test_the_defaults_for_the_places_things_go(self):
+        settings = InstallerSettings()
+        assert settings.app_dir is None and settings.launch_agents_dir is None
+        assert settings.service_label == "ai.telekinesis.tzara.server"
