@@ -1,5 +1,6 @@
 import logging
 import warnings
+from dataclasses import replace
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -9,7 +10,7 @@ from langchain_ollama import ChatOllama
 
 from helpers import PromptAwareFakeModel, RecordingFakeModel
 from tzara.agent import Tzara
-from tzara.agent.memory import ConversationMemory
+from tzara.agent.memory import ConversationMemory, HistoryMessage
 from tzara.config import TzaraConfig
 
 # The fake model's provider name, so the harness profile applies to it.
@@ -163,7 +164,7 @@ class TestPromptSentToTheModel:
 
     def test_system_prompt_has_tzaras_persona_and_not_the_coding_agent_default(self, seen):
         system_prompt = seen.seen_messages[0][0].text
-        assert TzaraConfig().prompts.system in system_prompt
+        assert TzaraConfig().prompts.rendered_system() in system_prompt
         assert TzaraConfig().prompts.base in system_prompt
         assert "You are a deep agent" not in system_prompt
 
@@ -302,6 +303,34 @@ class TestLogging:
             list(agent.handle("hi"))
         assert "turn failed" in caplog.text
 
+    def test_a_turn_that_fails_because_it_was_cancelled_is_logged_as_cancelled(self, caplog):
+        """Cancelling closes the model connection, which surfaces as an error."""
+        agent, _ = agent_with_fake_model()
+
+        class StreamKilledByCancel:
+            @property
+            def messages(self):
+                agent.cancel()  # what another thread does to stop a reply
+                raise ConnectionError("connection closed")
+
+            def abort(self):
+                pass
+
+        agent._agent = SimpleNamespace(  # type: ignore[assignment]
+            stream_events=lambda *_a, **_k: StreamKilledByCancel()
+        )
+        with caplog.at_level(logging.INFO, logger="tzara"), pytest.raises(ConnectionError):
+            list(agent.handle("hi"))
+        assert "turn cancelled" in caplog.text
+        assert "turn failed" not in caplog.text
+
+    def test_the_cancelled_flag_does_not_leak_into_the_next_turn(self, caplog):
+        agent, _ = agent_with_fake_model("first", "second")
+        agent.cancel()
+        with caplog.at_level(logging.INFO, logger="tzara"):
+            list(agent.handle("hi"))
+        assert "turn completed" in caplog.text
+
     def test_loading_and_interrupting_are_logged(self, caplog):
         agent, _ = agent_with_fake_model("warm")
         with caplog.at_level(logging.INFO, logger="tzara"):
@@ -309,3 +338,48 @@ class TestLogging:
             agent.interrupt()
         assert "loaded in" in caplog.text
         assert "response interrupted" in caplog.text
+
+
+class TestRenaming:
+    def test_the_assistants_name_is_what_the_model_is_told(self):
+        prompts = replace(TzaraConfig().prompts, assistant_name="Jarvis")
+        agent, model = agent_with_fake_model(prompts=prompts)
+        list(agent.handle("who are you?"))
+        system_prompt = model.seen_messages[0][0].text
+        assert "You are Jarvis," in system_prompt
+        assert "You are Tzara" not in system_prompt
+
+
+class TestHistory:
+    def test_is_empty_before_anything_is_said(self):
+        agent, _ = agent_with_fake_model()
+        assert agent.history() == []
+
+    def test_lists_what_the_user_and_the_assistant_said(self):
+        agent, _ = agent_with_fake_model("Hello there", "Fine, thanks")
+        list(agent.handle("hi"))
+        list(agent.handle("how are you?"))
+        assert agent.history() == [
+            HistoryMessage("user", "hi"),
+            HistoryMessage("assistant", "Hello there"),
+            HistoryMessage("user", "how are you?"),
+            HistoryMessage("assistant", "Fine, thanks"),
+        ]
+
+    def test_leaves_out_the_warm_up_message(self):
+        agent, _ = agent_with_fake_model("warm", "real", warmup_message="ping")
+        agent.warm_up()
+        list(agent.handle("hello"))
+        assert [item.text for item in agent.history() if item.role == "user"] == ["hello"]
+
+    def test_is_empty_again_after_a_new_conversation(self):
+        agent, _ = agent_with_fake_model("reply")
+        list(agent.handle("hi"))
+        agent.memory.reset()
+        assert agent.history() == []
+
+    def test_survives_an_interrupt(self):
+        agent, _ = agent_with_fake_model("first reply", "second reply")
+        list(agent.handle("question one"))
+        agent.interrupt()
+        assert [item.text for item in agent.history()] == ["question one", "first reply"]

@@ -21,7 +21,8 @@ class Prompts:
     available.
 
     Attributes:
-        system: Tzara's persona and behaviour rules.
+        system: Tzara's persona and behaviour rules. ``{name}`` stands for the assistant's name.
+        assistant_name: What the assistant calls itself. The macOS app lets the user change it.
         base: Replaces DeepAgents' coding-agent base prompt, which conflicts
             with Tzara's conversational persona. Placed after ``system``.
         todo_system: System prompt section describing the todo tool.
@@ -53,8 +54,10 @@ class Prompts:
         ),
     }
 
+    NAME_PLACEHOLDER: ClassVar[str] = "{name}"
+
     system: str = (
-        "You are Tzara, a natural conversational AI assistant.\n\n"
+        "You are {name}, a natural conversational AI assistant.\n\n"
         "Behavior rules:\n"
         "- Speak naturally and concisely.\n"
         "- Never mention tools, functions, APIs, or internal reasoning.\n"
@@ -68,6 +71,7 @@ class Prompts:
         "If the user asks about your name, identity, or general topics, answer "
         "directly without meta commentary."
     )
+    assistant_name: str = "Tzara"
     base: str = "You are a helpful assistant."
     todo_system: str = (
         "## `write_todos`\n\n"
@@ -83,3 +87,7 @@ class Prompts:
     tool_descriptions: Mapping[str, str] = field(
         default_factory=lambda: dict(Prompts.DEFAULT_TOOL_DESCRIPTIONS)
     )
+
+    def rendered_system(self) -> str:
+        """Return the system prompt with the assistant's name filled in."""
+        return self.system.replace(self.NAME_PLACEHOLDER, self.assistant_name)

@@ -12,7 +12,7 @@ from deepagents import create_deep_agent
 from langchain_core._api import LangChainBetaWarning
 
 from tzara.agent.harness import HarnessConfigurator
-from tzara.agent.memory import ConversationMemory
+from tzara.agent.memory import ConversationMemory, HistoryMessage
 from tzara.agent.models import ModelFactory
 from tzara.agent.summaries import SummaryRunFilter
 from tzara.config import TzaraConfig
@@ -54,6 +54,7 @@ class Tzara:
         self._harness = HarnessConfigurator(self._config.prompts, self._config.harness_providers)
         self._factory = ModelFactory(self._config.ollama)
         self._stream: GraphRunStream | None = None
+        self._cancel_requested = False
 
         # The v3 streaming protocol is flagged as beta, and langchain_core
         # re-enables the warning on import, so it would be printed into the chat.
@@ -84,6 +85,7 @@ class Tzara:
         Yields:
             Pieces of the assistant's reply as the model produces them.
         """
+        self._cancel_requested = False
         logger.info("turn started: %d characters", len(text))
         logger.debug("user message: %s", text)
         started = time.monotonic()
@@ -111,7 +113,8 @@ class Tzara:
                     yield piece
             outcome = "completed"
         except Exception:
-            outcome = "failed"
+            # Cancelling closes the connection, which surfaces as an error here.
+            outcome = "cancelled" if self._cancel_requested else "failed"
             raise
         finally:
             if self._stream is stream:
@@ -124,6 +127,20 @@ class Tzara:
                 time.monotonic() - started,
                 reply_characters,
             )
+
+    def history(self) -> list[HistoryMessage]:
+        """Return the conversation so far, as the user and assistant said it.
+
+        Tool calls, tool results and empty messages are left out.
+        """
+        state = self._agent.get_state(self._memory.run_config)
+        messages = (state.values or {}).get("messages", [])
+        roles = {"human": "user", "ai": "assistant"}
+        return [
+            HistoryMessage(roles[message.type], message.text)
+            for message in messages
+            if message.type in roles and message.text.strip()
+        ]
 
     def warm_up(self) -> None:
         """Load the model and prime Ollama's prompt cache.
@@ -154,6 +171,7 @@ class Tzara:
         Quick and non-blocking, so it is safe to call from a signal handler. The
         agent cannot be used again until :meth:`interrupt` rebuilds it.
         """
+        self._cancel_requested = True
         self._factory.close_connection(self._chat_model)
 
     def interrupt(self) -> None:
@@ -173,11 +191,12 @@ class Tzara:
 
     def _create_agent(self) -> None:
         """Build the chat model and the DeepAgents graph around it."""
+        self._cancel_requested = False
         self._chat_model = self._factory.create(self._model)
         self._agent = create_deep_agent(
             model=self._chat_model,
             tools=self._tools,
-            system_prompt=self._config.prompts.system,
+            system_prompt=self._config.prompts.rendered_system(),
             middleware=self._harness.middleware(),
             checkpointer=self._memory.checkpointer,
             interrupt_on={},

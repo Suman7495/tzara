@@ -1,0 +1,400 @@
+"""The FastAPI application: Tzara's agent over local HTTP."""
+
+from __future__ import annotations
+
+import asyncio
+import contextlib
+import json
+import logging
+import os
+import secrets
+import signal
+import threading
+from collections.abc import AsyncIterator, Awaitable, Callable
+from contextlib import asynccontextmanager
+from dataclasses import replace
+from types import FrameType
+from typing import Any, ClassVar
+
+import uvicorn
+from fastapi import Depends, FastAPI, Header, HTTPException, Request
+from fastapi.responses import JSONResponse, Response, StreamingResponse
+from pydantic import BaseModel, field_validator
+
+from tzara.agent.models import ModelCatalog
+from tzara.config import ServerSettings, TzaraConfig
+from tzara.server.files import NameStore, ServerInfo, ServerInfoFile, ServerPaths, TokenStore
+from tzara.server.service import (
+    ChatService,
+    DoneEvent,
+    ServiceBusy,
+    ServiceNotReady,
+    ServiceState,
+    TokenEvent,
+    TurnEvent,
+)
+
+logger = logging.getLogger(__name__)
+
+
+class ChatRequest(BaseModel):
+    """Body of ``POST /v1/chat``."""
+
+    message: str
+
+    @field_validator("message")
+    @classmethod
+    def not_blank(cls, value: str) -> str:
+        """Reject messages that are empty or only whitespace."""
+        if not value.strip():
+            raise ValueError("message must not be blank")
+        return value
+
+
+class ModelRequest(BaseModel):
+    """Body of ``PUT /v1/model``."""
+
+    model: str
+
+
+class NameRequest(BaseModel):
+    """Body of ``PUT /v1/name``."""
+
+    name: str
+
+
+class ShutdownAwareServer(uvicorn.Server):
+    """A uvicorn server that stops writing a reply as soon as it is told to exit.
+
+    uvicorn waits for open connections before shutting down, so a streaming reply
+    would otherwise hold up ``tzara stop`` until the grace period ran out.
+    """
+
+    def __init__(self, config: uvicorn.Config, service: ChatService) -> None:
+        """Create the server.
+
+        Args:
+            config: uvicorn configuration.
+            service: The service whose reply should be cancelled on shutdown.
+        """
+        super().__init__(config)
+        self._service = service
+
+    def handle_exit(self, sig: int, frame: FrameType | None) -> None:
+        """Cancel the reply being written, then shut down and exit normally.
+
+        This does not call uvicorn's own handler. That one records the signal so it can send it
+        to the process again after a graceful shutdown, which ends the process *by signal*. A
+        service manager such as launchd then takes a deliberate ``tzara stop`` for a crash and
+        restarts the server. Handled here, a stop is a normal exit with status 0.
+        """
+        self._service.close()
+        if self.should_exit and sig == signal.SIGINT:
+            self.force_exit = True  # a second Ctrl+C stops waiting
+        else:
+            self.should_exit = True
+
+
+class TzaraServer:
+    """HTTP interface to the agent, for clients on the same machine.
+
+    Three guards protect it, because any program or web page on this computer can
+    reach a local port. Requests must come to a loopback ``Host`` (defeating DNS
+    rebinding), must not carry a browser ``Origin`` header (defeating cross-site
+    requests), and must present the secret token.
+
+    Replies stream as server-sent events (``text/event-stream``): ``token``
+    events with pieces of text, then one ``done`` or ``error`` event.
+    """
+
+    STREAM_HEADERS: ClassVar[dict[str, str]] = {
+        "Cache-Control": "no-cache",
+        "X-Accel-Buffering": "no",
+    }
+    GRACEFUL_SHUTDOWN_SECONDS: ClassVar[int] = 5
+    # A server-sent-events comment: clients ignore it, but it counts as data.
+    KEEP_ALIVE: ClassVar[str] = ": keep-alive\n\n"
+
+    def __init__(
+        self,
+        service: ChatService,
+        token: str,
+        settings: ServerSettings,
+        info_file: ServerInfoFile | None = None,
+    ) -> None:
+        """Build the application.
+
+        Args:
+            service: The agent to expose.
+            token: Secret clients must present as a bearer token.
+            settings: Server settings.
+            info_file: Where to record the running server for clients. ``None``
+                records nothing.
+        """
+        self._service = service
+        self._token = token
+        self._settings = settings
+        self._info_file = info_file
+        self._allowed_hosts = {
+            f"{name}:{settings.port}".lower() for name in (settings.HOST, "localhost", "[::1]")
+        }
+        self._app = FastAPI(
+            title="Tzara",
+            lifespan=self._lifespan,
+            docs_url=None,
+            redoc_url=None,
+            openapi_url=None,
+        )
+        self._app.middleware("http")(self._guard)
+        self._register_routes()
+
+    @classmethod
+    def serve(cls, config: TzaraConfig) -> None:
+        """Run the server in this process until it is stopped.
+
+        Args:
+            config: Configuration.
+        """
+        paths = ServerPaths.from_settings(config.server)
+        token = TokenStore(paths.token_file).load_or_create()
+        names = NameStore(paths.name_file)
+        saved_name = names.load()
+        if saved_name and len(saved_name) <= config.server.max_name_chars:
+            config = replace(config, prompts=replace(config.prompts, assistant_name=saved_name))
+        service = ChatService(config, name_store=names)
+        server = cls(service, token, config.server, ServerInfoFile(paths.info_file))
+        logger.info("serving on http://%s:%d", config.server.HOST, config.server.port)
+        uvicorn_config = uvicorn.Config(
+            server.app,
+            host=config.server.HOST,
+            port=config.server.port,
+            log_config=None,
+            access_log=False,
+            timeout_graceful_shutdown=cls.GRACEFUL_SHUTDOWN_SECONDS,
+        )
+        ShutdownAwareServer(uvicorn_config, service).run()
+
+    @property
+    def app(self) -> FastAPI:
+        """The ASGI application."""
+        return self._app
+
+    @asynccontextmanager
+    async def _lifespan(self, _app: FastAPI) -> AsyncIterator[None]:
+        """Load the model in the background, and publish the server's address."""
+        if self._service.state is ServiceState.NEW:
+            threading.Thread(
+                target=self._service.start, name="tzara-model-load", daemon=True
+            ).start()
+        pid = os.getpid()
+        if self._info_file is not None:
+            self._info_file.write(ServerInfo(self._settings.HOST, self._settings.port, pid))
+        try:
+            yield
+        finally:
+            self._service.close()
+            if self._info_file is not None:
+                self._info_file.remove_if_owned_by(pid)
+
+    async def _guard(
+        self, request: Request, call_next: Callable[[Request], Awaitable[Response]]
+    ) -> Response:
+        """Refuse browser requests and requests addressed to a non-loopback host."""
+        if "origin" in request.headers:
+            return JSONResponse({"detail": "browser requests are not allowed"}, status_code=403)
+        if request.headers.get("host", "").lower() not in self._allowed_hosts:
+            return JSONResponse({"detail": "invalid Host header"}, status_code=400)
+        return await call_next(request)
+
+    def _require_token(self, authorization: str | None = Header(default=None)) -> None:
+        """Reject requests without the right bearer token."""
+        scheme, _, presented = (authorization or "").partition(" ")
+        valid = scheme.lower() == "bearer" and secrets.compare_digest(
+            presented.encode(), self._token.encode()
+        )
+        if not valid:
+            raise HTTPException(
+                status_code=401,
+                detail="missing or invalid token",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+
+    def _register_routes(self) -> None:
+        """Attach the endpoints."""
+        protected = [Depends(self._require_token)]
+        self._app.add_api_route("/v1/health", self.health, methods=["GET"])
+        self._app.add_api_route("/v1/status", self.status, methods=["GET"], dependencies=protected)
+        self._app.add_api_route("/v1/models", self.models, methods=["GET"], dependencies=protected)
+        self._app.add_api_route("/v1/chat", self.chat, methods=["POST"], dependencies=protected)
+        self._app.add_api_route(
+            "/v1/interrupt", self.interrupt, methods=["POST"], dependencies=protected
+        )
+        self._app.add_api_route(
+            "/v1/conversation/new", self.new_conversation, methods=["POST"], dependencies=protected
+        )
+        self._app.add_api_route(
+            "/v1/model", self.set_model, methods=["PUT"], dependencies=protected
+        )
+        self._app.add_api_route("/v1/name", self.set_name, methods=["PUT"], dependencies=protected)
+        self._app.add_api_route(
+            "/v1/conversation", self.conversation, methods=["GET"], dependencies=protected
+        )
+
+    async def health(self) -> dict[str, str]:
+        """Say that the server is up. Needs no token and reveals nothing else."""
+        return {"status": "ok"}
+
+    async def status(self) -> dict[str, Any]:
+        """Report whether the model is loaded, which one, and whether it is busy."""
+        return {
+            "state": self._service.state.value,
+            "model": self._service.model,
+            "name": self._service.name,
+            "busy": self._service.busy,
+            "error": self._service.error,
+        }
+
+    async def models(self) -> dict[str, list[dict[str, Any]]]:
+        """List the models Tzara knows about, grouped by provider, in display order."""
+        return {
+            "providers": [
+                {
+                    "name": provider,
+                    "models": [
+                        {"id": model_id, "description": description}
+                        for model_id, description in models.items()
+                    ],
+                }
+                for provider, models in ModelCatalog.MODELS.items()
+            ]
+        }
+
+    async def conversation(self) -> dict[str, list[dict[str, str]]]:
+        """Return the conversation so far, so a client can show it again."""
+        history = await asyncio.to_thread(self._service.history)
+        return {"messages": [{"role": item.role, "text": item.text} for item in history]}
+
+    async def chat(self, body: ChatRequest) -> StreamingResponse:
+        """Answer a message, streaming the reply as server-sent events.
+
+        Raises:
+            HTTPException: 413 if the message is too long, 503 while the model is
+                loading, 409 if another reply is being written.
+        """
+        if len(body.message) > self._settings.max_message_chars:
+            raise HTTPException(
+                status_code=413,
+                detail=f"message is longer than {self._settings.max_message_chars} characters",
+            )
+
+        loop = asyncio.get_running_loop()
+        events: asyncio.Queue[TurnEvent | None] = asyncio.Queue()
+
+        def sink(event: TurnEvent | None) -> None:
+            # Runs on the turn's thread. The loop is gone if the server is
+            # shutting down, and then there is nobody left to tell.
+            with contextlib.suppress(RuntimeError):
+                loop.call_soon_threadsafe(events.put_nowait, event)
+
+        try:
+            turn = self._service.start_turn(body.message, sink)
+        except ServiceNotReady as error:
+            raise HTTPException(status_code=503, detail=str(error)) from error
+        except ServiceBusy as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+
+        async def stream() -> AsyncIterator[str]:
+            finished = False
+            try:
+                while True:
+                    try:
+                        async with asyncio.timeout(self._settings.heartbeat_seconds):
+                            event = await events.get()
+                    except TimeoutError:
+                        yield self.KEEP_ALIVE
+                        continue
+                    if event is None:
+                        break
+                    yield self._format_event(event)
+                finished = True
+            finally:
+                # The client went away mid-reply: stop writing it.
+                if not finished:
+                    turn.cancel()
+
+        return StreamingResponse(
+            stream(), media_type="text/event-stream", headers=self.STREAM_HEADERS
+        )
+
+    async def interrupt(self) -> Response:
+        """Cancel the reply being written. Does nothing if there is none."""
+        self._service.interrupt()
+        return Response(status_code=204)
+
+    async def new_conversation(self) -> dict[str, bool]:
+        """Forget the conversation so far.
+
+        Raises:
+            HTTPException: 409 if the agent is busy.
+        """
+        try:
+            await asyncio.to_thread(self._service.new_conversation)
+        except ServiceBusy as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+        return {"ok": True}
+
+    async def set_model(self, body: ModelRequest) -> dict[str, str]:
+        """Load another model and switch to it, keeping the conversation.
+
+        Raises:
+            HTTPException: 422 if the name is not ``provider:model-name``, 409 if
+                the agent is busy, 502 if the model could not be loaded.
+        """
+        if not ModelCatalog.provider_of(body.model):
+            raise HTTPException(
+                status_code=422, detail="model must be written as provider:model-name"
+            )
+        try:
+            await asyncio.to_thread(self._service.switch_model, body.model)
+        except ServiceBusy as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+        except Exception as error:  # pylint: disable=broad-exception-caught
+            logger.exception("could not switch to %s", body.model)
+            raise HTTPException(
+                status_code=502, detail=f"could not load {body.model}: {error}"
+            ) from error
+        return {"model": self._service.model}
+
+    async def set_name(self, body: NameRequest) -> dict[str, str]:
+        """Rename the assistant. This reloads the agent, which takes a few seconds.
+
+        Raises:
+            HTTPException: 422 if the name is not one short line, 409 if the agent is
+                busy, 502 if the agent could not be reloaded.
+        """
+        try:
+            await asyncio.to_thread(self._service.rename, body.name)
+        except ValueError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
+        except ServiceBusy as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+        except Exception as error:  # pylint: disable=broad-exception-caught
+            logger.exception("could not rename the assistant")
+            raise HTTPException(status_code=502, detail=f"could not rename: {error}") from error
+        return {"name": self._service.name}
+
+    @staticmethod
+    def _format_event(event: TurnEvent) -> str:
+        """Render one turn event as a server-sent event."""
+        data: dict[str, Any]
+        if isinstance(event, TokenEvent):
+            name, data = "token", {"text": event.text}
+        elif isinstance(event, DoneEvent):
+            name = "done"
+            data = {
+                "first_token_seconds": event.first_token_seconds,
+                "characters": event.characters,
+            }
+        else:
+            name, data = "error", {"message": event.message}
+        return f"event: {name}\ndata: {json.dumps(data)}\n\n"
