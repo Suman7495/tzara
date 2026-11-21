@@ -37,7 +37,11 @@ struct SettingsView: View {
             Section {
                 LabeledContent("Hotkey") { hotkeyStatus }
                 LabeledContent("Server") { serverStatus }
-                Button("Quit Tzara") { NSApplication.shared.terminate(nil) }
+                updates
+                Button("Uninstall Tzara", role: .destructive, action: confirmUninstall)
+                    .buttonStyle(.borderedProminent)
+                    .tint(.red)
+                    .disabled(settings.isUninstalling)
             }
         }
         .formStyle(.grouped)
@@ -102,6 +106,38 @@ struct SettingsView: View {
                 Text("Loading \(target)\u{2026} about 15 s").font(.caption)
             }
         } else if let message = settings.message {
+            Text(message).font(.caption).foregroundStyle(.secondary)
+        }
+    }
+
+    // MARK: - Uninstall
+
+    private func confirmUninstall() {
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "Uninstall Tzara?"
+        alert.informativeText = "This removes the app, the background server and the tzara command. "
+            + "Ollama, its models and the logs are left alone."
+        alert.addButton(withTitle: "Uninstall").hasDestructiveAction = true
+        alert.addButton(withTitle: "Cancel")
+        NSApplication.shared.activate(ignoringOtherApps: true)
+        if alert.runModal() == .alertFirstButtonReturn { settings.uninstall() }
+    }
+
+    // MARK: - Updates
+
+    @ViewBuilder private var updates: some View {
+        LabeledContent("Version \(settings.currentVersion.description)") {
+            HStack(spacing: 8) {
+                if settings.isUpdating { ProgressView().controlSize(.small) }
+                Button("Update", action: settings.update)
+                    .disabled(settings.isUpdating)
+                    .help("Install the latest release from GitHub")
+            }
+        }
+        Toggle("Update automatically", isOn: $settings.autoUpdate)
+            .help("Checks every few hours and installs new releases when this box is closed. Tzara restarts.")
+        if let message = settings.updateMessage {
             Text(message).font(.caption).foregroundStyle(.secondary)
         }
     }

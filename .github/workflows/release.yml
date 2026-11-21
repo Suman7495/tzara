@@ -3,6 +3,7 @@ name: Release
 # Pushing a tag such as v0.1.0 publishes the macOS app for that version. `tzara setup` downloads
 # the app that matches the Tzara version it is running, so the app and the server always agree.
 #
+#   0. once: app/scripts/create_signing_identity.sh, then save the two GitHub secrets it names
 #   1. bump `version` in pyproject.toml
 #   2. git tag v0.1.0 && git push origin v0.1.0
 
@@ -30,7 +31,15 @@ jobs:
             exit 1
           fi
       - run: make app-test
+      - name: Import the signing certificate
+        env:
+          TZARA_SIGNING_P12: ${{ secrets.TZARA_SIGNING_P12 }}
+          TZARA_SIGNING_PASSWORD: ${{ secrets.TZARA_SIGNING_PASSWORD }}
+        run: app/scripts/import_signing_identity.sh
+      # A release signed ad-hoc would make macOS ask for Input Monitoring again, so refuse it.
       - run: make app-release
+        env:
+          TZARA_REQUIRE_SIGNING: "1"
       - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}

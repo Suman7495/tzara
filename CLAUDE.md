@@ -198,6 +198,26 @@ Release: bump `version`, tag `vX.Y.Z`, push; `.github/workflows/release.yml` run
 Never run `tzara setup`/`uninstall` against default paths while developing: they stop the
 running server and app. Use `TZARA_DATA_DIR`, `TZARA_APP_DIR`, `TZARA_SERVER_PORT`.
 
+## Signing and updates
+
+- **Stable signature.** macOS ties Input Monitoring to the code signature, and an ad-hoc one changes
+  with every build. `app/scripts/create_signing_identity.sh` makes a self-signed certificate once
+  (login keychain, plus base64 for the GitHub secrets `TZARA_SIGNING_P12` and
+  `TZARA_SIGNING_PASSWORD`); `build_app.sh` signs with "Tzara Signing" when present. `release.yml`
+  imports it with `import_signing_identity.sh` and sets `TZARA_REQUIRE_SIGNING=1`, so an unsigned
+  release fails. Verified: two builds, and a build from the imported-from-secret keychain, have the
+  same designated requirement (`certificate leaf = H"..."`). Never create a second certificate.
+- **The app's version** comes from `pyproject.toml`, stamped into Info.plist by `build_app.sh`.
+- **Automatic updates** (`AutoUpdater`, `AutoUpdatePolicy`, `UpdatePreferences`; on by default, saved in
+  UserDefaults): a timer asks every 10 minutes; a check runs at most every 6 hours, never with the chat box
+  open, and only for a copy installed under `/Applications/`, so a developer's build never replaces itself.
+- **Uninstall button** (Settings, red, confirms with an alert): runs that version's `install.sh` with
+  `--uninstall`, detached like an update (`UpdateInstaller.uninstall`). Quit stays in the menu-bar icon.
+- **Update button** (`SettingsModel.update`, `UpdateChecker`/`UpdateInstaller` in `Updates.swift`): asks
+  the GitHub API for the latest release; if newer, runs that tag's `install.sh` detached (`nohup`),
+  which updates the package, the server and the app, then reopens the app. The variable must be set on
+  `sh` (`curl … | TZARA_REF=v… sh`), not on `curl`; a test runs the real script to guard that.
+
 ## Logging
 
 Logs go to a rotating file, never the terminal (the console is the chat). The default

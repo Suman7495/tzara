@@ -27,27 +27,21 @@ curl -fsSL https://raw.githubusercontent.com/Suman7495/tzara/main/install.sh | s
 
 ## Usage
 
+1. **Open Tzara:** double-click `~/Applications/Tzara.app` (or use Spotlight). A small chat box appears.
+2. **Allow Input Monitoring** when macOS asks (or in *System Settings → Privacy & Security → Input Monitoring*), then quit and reopen Tzara.
+3. **Tap Control+Option** anywhere (press both, release, touch nothing else) to open or close the box at your pointer.
 
-## Uninstallion
-`sh install.sh --uninstall` removes the app, login items, server and command. It leaves Ollama, its models and your logs.
+Not working? `tzara status` should say `ready`, and the log is `~/Library/Logs/tzara/app.log`. More in [macOS app](#macos-app). Prefer a terminal? Run `tzara` ([command line](#command-line)).
 
+## Update
 
-## For developers
+Tzara updates itself by default: every few hours it checks GitHub and installs a newer release when the chat box is closed, then restarts (about a minute). Turn that off, or update right away, in **gear → Settings** (*Update automatically*, *Update*). Or rerun the install command.
 
-The one-liner works for you too. To hack on Tzara instead:
+## Uninstall
 
-```bash
-git clone https://github.com/Suman7495/tzara.git && cd tzara
-make install                      # exact tested versions, plus dev tools
-tzara setup --no-service --no-app # just Ollama and the model
-make app                          # build the app yourself (needs the Command Line Tools)
-```
+In the app: **gear → Settings → Uninstall Tzara** (asks to confirm), or run `sh install.sh --uninstall`. Either removes the app, login items, server and command. It leaves Ollama, its models and your logs.
 
-Skip the login service while developing: it would hold port 8927 (set `TZARA_SERVER_PORT` to run a second server). `tzara setup` fetches the app matching the installed version, so it needs a published release; `make app` builds your own.
-
-**Releasing:** bump `version` in `pyproject.toml`, then `git tag vX.Y.Z && git push origin vX.Y.Z`. The release workflow checks the tag matches, tests and builds the app, and publishes `Tzara.app.zip` with its checksum.
-
-## Quickstart
+## Command line
 
 ```bash
 tzara
@@ -68,20 +62,18 @@ Models are written `provider:model-name`, e.g. `ollama:qwen3:8b`, `anthropic:cla
 
 A menu-bar app that opens a small chat box beside your mouse, over whatever you're doing, including full-screen apps. It talks to the local server below.
 
-### Launch the app
-
-1. **Open it:** double-click `~/Applications/Tzara.app` (or Spotlight, or `open ~/Applications/Tzara.app`). The chat box appears at once, so you can start without the hotkey. Opening the app again brings the box back. At login it starts quietly.
-   - No such file? Setup couldn't download it (it prints `! There is no app build for version …`). Build it: `xcode-select --install` (once), clone the repo, `make app`, then `open app/build/Tzara.app`.
-2. **Check the server:** `tzara status` should say `ready`; if not, `tzara start`.
-3. **Allow Input Monitoring** for the hotkey: macOS asks on first launch, or switch **Tzara** on in *System Settings → Privacy & Security → Input Monitoring* and reopen the app. Without it only the box and the menu-bar icon work.
-4. **Tap Control+Option** (press both, release, touch nothing else) to open or close the box.
-
-- **Tap Control+Option** (press both, release, touch nothing else) to open or close the box. It opens with the input line under your pointer, so you can type straight away; your previous chat is shown. **×** or **Esc** closes it.
-- **Pencil**: new conversation. **Gear → Settings**: pick the model from a dropdown (or type any `provider:model-name`), rename, check the hotkey and server, quit.
+- **Tap Control+Option** opens or closes the box. It opens with the input line under your pointer, so you can type straight away; your previous chat is shown. **×** or **Esc** closes it.
+- **Pencil**: new conversation. **Gear → Settings**: pick the model from a dropdown (or type any `provider:model-name`), rename, check the hotkey and server, **Update** to the latest release, **Uninstall Tzara**.
 - **Double-click the name** at the top to rename it. The assistant uses the new name when it describes itself, and remembers it.
-- The menu-bar icon opens the chat, shows whether the hotkey is active, and quits.
+- **Update automatically** (on by default) and **Update** look up the newest release on GitHub and install it if it is newer. Progress and errors go to `~/Library/Logs/tzara/update.log`.
+- The menu-bar icon opens the chat, shows whether the hotkey is active, and has **Quit Tzara**.
 
-The hotkey check looks only for the Control+Option tap and doesn't record what you type. Each update or rebuild re-asks for Input Monitoring unless you sign with a stable identity: create a code-signing certificate in Keychain Access (*Certificate Assistant → Create a Certificate*) and run `TZARA_SIGN_IDENTITY="Your Cert" make app`. The app's log is `~/Library/Logs/tzara/app.log`. `make app-test` runs its tests.
+**If the app is missing or the hotkey does nothing:**
+- No `~/Applications/Tzara.app`: setup couldn't download it (it printed `! There is no app build for version …`). Build it with `xcode-select --install` (once), clone the repo, `make app`, then `open app/build/Tzara.app`.
+- `tzara status` should say `ready`; if not, `tzara start`.
+- Without Input Monitoring only the box and the menu-bar icon work. Switch **Tzara** on in *System Settings → Privacy & Security → Input Monitoring*, then quit and reopen it. The log line `watching for Control+Option (Input Monitoring granted: true)` confirms it.
+
+The hotkey check looks only for the Control+Option tap and doesn't record what you type. Releases are signed with one fixed certificate, so updating keeps the permission (a build you make yourself is signed ad-hoc, and asks again, unless you run `app/scripts/create_signing_identity.sh` once). The app's log is `~/Library/Logs/tzara/app.log`. `make app-test` runs its tests.
 
 ## Local server
 
@@ -162,6 +154,21 @@ Register it in `Tzara.__init__` (`src/tzara/agent/agent.py`):
 self._tools = [Calculator(), Weather()]
 ```
 Tzara decides when to use it. Add a test in `tests/` and run `make check`.
+
+## For developers
+
+The one-liner works for you too. To hack on Tzara instead:
+
+```bash
+git clone https://github.com/Suman7495/tzara.git && cd tzara
+make install                      # exact tested versions, plus dev tools
+tzara setup --no-service --no-app # just Ollama and the model
+make app                          # build the app yourself (needs the Command Line Tools)
+```
+
+Skip the login service while developing: it would hold port 8927 (set `TZARA_SERVER_PORT` to run a second server). `tzara setup` fetches the app matching the installed version, so it needs a published release; `make app` builds your own.
+
+**Releasing.** Once: run `app/scripts/create_signing_identity.sh` and save the two GitHub secrets it prints (`TZARA_SIGNING_P12`, `TZARA_SIGNING_PASSWORD`). Every app is then signed with the same certificate, so users keep their Input Monitoring permission across updates; the workflow refuses to publish an unsigned app. For each release: bump `version` in `pyproject.toml`, then `git tag vX.Y.Z && git push origin vX.Y.Z`. The workflow checks the tag matches, tests and builds the app, and publishes `Tzara.app.zip` with its checksum. Running `make app` after the script above signs your local builds with the same certificate.
 
 ## Project Structure
 
