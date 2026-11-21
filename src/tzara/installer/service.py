@@ -171,7 +171,7 @@ class ServiceInstaller:
         """The job that opens the app at login."""
         return LaunchAgent(
             self._settings.login_label,
-            ["/usr/bin/open", "-a", str(app_path)],
+            ["/usr/bin/open", "-a", str(app_path), "--args", "--background"],
             self._directory,
             self._runner,
         )

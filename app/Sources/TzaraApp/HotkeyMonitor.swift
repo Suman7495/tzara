@@ -17,16 +17,20 @@ final class HotkeyMonitor {
     private var source: CFRunLoopSource?
     private var pollTimer: Timer?
     private var askedForPermission = false
+    private var loggedMissingTap = false
+    private var receivedModifierEvent = false
 
     /// Whether the keyboard is being watched right now.
-    var isActive: Bool { tap != nil }
+    var isActive: Bool { tap != nil && hasPermission }
 
     /// Whether the user has granted Input Monitoring.
     var hasPermission: Bool { CGPreflightListenEventAccess() }
 
     func start() {
         guard tap == nil else { return }
-        if hasPermission, installTap() { return }
+        // Try the tap itself: macOS refuses it without permission, and that is a better test
+        // than the permission query, which can answer "no" for a grant it does not yet honour.
+        if installTap() { return }
 
         if !askedForPermission {
             askedForPermission = true
@@ -50,7 +54,7 @@ final class HotkeyMonitor {
     private func schedulePolling() {
         guard pollTimer == nil else { return }
         pollTimer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
-            guard let self, self.hasPermission, self.installTap() else { return }
+            guard let self, self.installTap() else { return }
             self.pollTimer?.invalidate()
             self.pollTimer = nil
         }
@@ -78,7 +82,10 @@ final class HotkeyMonitor {
                 eventsOfInterest: mask, callback: callback,
                 userInfo: Unmanaged.passUnretained(self).toOpaque())
         else {
-            FileLog.shared.info("could not create the keyboard event tap")
+            if !loggedMissingTap {
+                loggedMissingTap = true
+                FileLog.shared.info("no keyboard event tap yet (Input Monitoring granted: \(hasPermission))")
+            }
             return false
         }
 
@@ -87,7 +94,8 @@ final class HotkeyMonitor {
         CGEvent.tapEnable(tap: tap, enable: true)
         self.tap = tap
         self.source = source
-        FileLog.shared.info("watching for Control+Option")
+        FileLog.shared.info("watching for Control+Option (Input Monitoring granted: \(hasPermission))")
+        if !hasPermission { _ = CGRequestListenEventAccess() }
         return true
     }
 
@@ -98,6 +106,10 @@ final class HotkeyMonitor {
             if let tap { CGEvent.tapEnable(tap: tap, enable: true) }
             FileLog.shared.info("event tap was disabled by the system; re-enabled")
         case .flagsChanged:
+            if !receivedModifierEvent {
+                receivedModifierEvent = true
+                FileLog.shared.info("the keyboard watcher is receiving modifier keys")
+            }
             let seconds = Double(event.timestamp) / 1_000_000_000
             let modifiers = ModifierSet(flags: event.flags)
             if detector.handle(.modifiersChanged(modifiers, at: seconds)) { onChordTapped?() }

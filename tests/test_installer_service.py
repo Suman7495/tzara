@@ -141,6 +141,8 @@ class TestServiceInstaller:
             "/usr/bin/open",
             "-a",
             "/Users/x/Applications/Tzara.app",
+            "--args",
+            "--background",
         ]
         assert definition["Label"] == "ai.telekinesis.tzara.app"
         assert "KeepAlive" not in definition

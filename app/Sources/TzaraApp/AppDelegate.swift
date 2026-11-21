@@ -12,14 +12,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         self.chatBox = chatBox
         statusItem = StatusItemController(hotkey: hotkey, chatBox: chatBox)
 
-        hotkey.onChordTapped = { chatBox.toggle() }
+        hotkey.onChordTapped = {
+            FileLog.shared.info("Control+Option tapped")
+            chatBox.toggle()
+        }
         hotkey.start()
         FileLog.shared.info("started; log at \(FileLog.shared.path)")
 
-        // `--show-now` opens the box straight away, for trying it without the hotkey;
-        // `--settings` opens it on the settings screen.
+        // Opening the app by hand shows the box, so there is something to click. The login job
+        // passes `--background` to start quietly instead. `--settings` opens the settings screen.
         let arguments = CommandLine.arguments
-        if arguments.contains("--show-now") || arguments.contains("--settings") {
+        if !arguments.contains("--background") {
             let settings = arguments.contains("--settings")
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { chatBox.show(settings: settings) }
         }
@@ -31,6 +34,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 NSApplication.shared.terminate(nil)
             }
         }
+    }
+
+    /// Opening the app again while it runs (Finder, Spotlight, `open`) shows the box.
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        chatBox?.show(settings: false)
+        return false
     }
 
     func applicationWillTerminate(_ notification: Notification) {

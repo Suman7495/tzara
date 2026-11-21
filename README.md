@@ -68,7 +68,13 @@ Models are written `provider:model-name`, e.g. `ollama:qwen3:8b`, `anthropic:cla
 
 A menu-bar app that opens a small chat box beside your mouse, over whatever you're doing, including full-screen apps. It talks to the local server below.
 
-Installed by `tzara setup`; to build it yourself run `make app` (needs `xcode-select --install`) and open `app/build/Tzara.app`.
+### Launch the app
+
+1. **Open it:** double-click `~/Applications/Tzara.app` (or Spotlight, or `open ~/Applications/Tzara.app`). The chat box appears at once, so you can start without the hotkey. Opening the app again brings the box back. At login it starts quietly.
+   - No such file? Setup couldn't download it (it prints `! There is no app build for version …`). Build it: `xcode-select --install` (once), clone the repo, `make app`, then `open app/build/Tzara.app`.
+2. **Check the server:** `tzara status` should say `ready`; if not, `tzara start`.
+3. **Allow Input Monitoring** for the hotkey: macOS asks on first launch, or switch **Tzara** on in *System Settings → Privacy & Security → Input Monitoring* and reopen the app. Without it only the box and the menu-bar icon work.
+4. **Tap Control+Option** (press both, release, touch nothing else) to open or close the box.
 
 - **Tap Control+Option** (press both, release, touch nothing else) to open or close the box. It opens with the input line under your pointer, so you can type straight away; your previous chat is shown. **×** or **Esc** closes it.
 - **Pencil**: new conversation. **Gear → Settings**: pick the model from a dropdown (or type any `provider:model-name`), rename, check the hotkey and server, quit.

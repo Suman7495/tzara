@@ -177,7 +177,7 @@ against a real server). `make app` builds `app/build/Tzara.app`; `make app-test`
   each open. `ChatClient` never sends an `Origin` header (the server refuses browser requests)
   and reads bytes itself, because `URLSession`'s line reader drops the blank lines SSE needs.
 - `build_app.sh` refuses to produce a bundle whose executable doesn't match its Info.plist.
-- **Seeing the UI without Screen Recording permission.** `Tzara --show-now` opens the box,
+- **Seeing the UI without Screen Recording permission.** Opening `Tzara` shows the box (the login job passes `--background` to skip that),
   `--settings` opens it on the settings screen, and `--snapshot FILE.png` draws the view into a
   PNG after it has loaded, then quits (the view draws itself, so nothing is captured from the
   screen). Run against a test server (`TZARA_SERVER_PORT`, `TZARA_DATA_DIR`) so a real one is
