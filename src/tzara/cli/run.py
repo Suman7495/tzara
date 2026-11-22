@@ -16,6 +16,7 @@ from tzara.agent import Tzara
 from tzara.agent.memory import ConversationMemory
 from tzara.cli.commands import BuiltinCommands, CommandRegistry, ExitRequested
 from tzara.config import TzaraConfig
+from tzara.memory import PersonalMemory
 
 logger = logging.getLogger(__name__)
 
@@ -34,7 +35,9 @@ class TzaraCLI:
         console: Console | None = None,
         agent_factory: Callable[..., Tzara] = Tzara,
         memory: ConversationMemory | None = None,
+        *,
         log_path: Path | None = None,
+        personal: PersonalMemory | None = None,
     ) -> None:
         """Create the CLI.
 
@@ -47,15 +50,18 @@ class TzaraCLI:
                 so it survives ``/set-model``. Defaults to a new, empty one.
             log_path: Log file, mentioned in error messages. ``None`` if
                 logging to a file is unavailable.
+            personal: What is remembered about the user, handed to every agent. ``None``
+                means nothing is kept.
         """
         self._config = config or TzaraConfig.from_env()
         self._console = console or Console()
         self._agent_factory = agent_factory
         self._memory = memory or ConversationMemory()
         self._log_path = log_path
+        self._personal = personal
         self._agent: Tzara | None = None
         self._registry = CommandRegistry(self._console)
-        BuiltinCommands(self._registry, self._console, self)
+        BuiltinCommands(self._registry, self._console, self, self._config.cli)
 
     @property
     def current_model(self) -> str:
@@ -79,12 +85,14 @@ class TzaraCLI:
         """
         cli = self._config.cli
         try:
-            candidate = self._agent_factory(model=model, config=self._config, memory=self._memory)
+            candidate = self._agent_factory(
+                model=model, config=self._config, memory=self._memory, personal=self._personal
+            )
             self._warm_up(candidate, cli.switching_status)
         except KeyboardInterrupt:
             logger.info("switch to %s cancelled", model)
             self._console.print("\nCancelled.", markup=False)
-        except Exception as error:  # pylint: disable=broad-exception-caught
+        except Exception as error:
             self._report_error(f"Could not switch to {model}", error)
         else:
             self._agent = candidate
@@ -96,6 +104,31 @@ class TzaraCLI:
         self._memory.reset()
         logger.info("new conversation started")
         self._console.print(self._config.cli.new_conversation, markup=False)
+
+    def show_memory(self) -> None:
+        """Print what is remembered about the user."""
+        cli = self._config.cli
+        if self._personal is None:
+            self._console.print(cli.memory_off, markup=False)
+            return
+        facts = self._personal.facts.all()
+        if not facts:
+            self._console.print(cli.memory_empty, markup=False)
+            return
+        self._console.print(
+            "\n" + cli.memory_header.format(count=self._personal.log.count()), markup=False
+        )
+        for fact in facts:
+            self._console.print(f"  - {fact.text}", markup=False)
+        self._console.print()
+
+    def erase_memory(self) -> None:
+        """Forget every fact and every stored conversation, and this conversation too."""
+        self._memory.reset()
+        if self._personal is not None:
+            self._personal.erase()
+        logger.info("memory erased")
+        self._console.print(self._config.cli.memory_erased, markup=False)
 
     def _start(self) -> bool:
         """Create the agent and load its model before accepting input.
@@ -110,9 +143,12 @@ class TzaraCLI:
         cli = self._config.cli
         try:
             self._agent = self._agent_factory(
-                model=self._config.model, config=self._config, memory=self._memory
+                model=self._config.model,
+                config=self._config,
+                memory=self._memory,
+                personal=self._personal,
             )
-        except Exception as error:  # pylint: disable=broad-exception-caught
+        except Exception as error:
             self._report_error("Error", error)
             return False
 
@@ -121,7 +157,7 @@ class TzaraCLI:
         except KeyboardInterrupt:
             self._console.print("\n" + cli.goodbye, markup=False)
             return False
-        except Exception as error:  # pylint: disable=broad-exception-caught
+        except Exception as error:
             self._report_error(cli.load_failed, error, style="yellow")
         return True
 
@@ -147,7 +183,7 @@ class TzaraCLI:
                 # the generic handler below it would repeat forever.
                 self._console.print("\n" + cli.goodbye, markup=False)
                 return
-            except Exception as error:  # pylint: disable=broad-exception-caught
+            except Exception as error:
                 self._report_error("Error", error)
 
     def _respond(self, text: str) -> None:

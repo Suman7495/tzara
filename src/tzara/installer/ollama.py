@@ -27,7 +27,7 @@ class OllamaSetup:
         "Install Ollama from https://ollama.com/download, then run 'tzara setup' again."
     )
 
-    def __init__(  # pylint: disable=too-many-arguments,too-many-positional-arguments
+    def __init__(
         self,
         settings: InstallerSettings,
         runner: CommandRunner,

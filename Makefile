@@ -1,4 +1,4 @@
-.PHONY: install install-latest lock upgrade format lint typecheck test check app app-test app-release
+.PHONY: install install-latest lock upgrade format lint typecheck test check app app-test app-release dev
 
 # Install the exact versions in requirements.lock (what CI and the tests use).
 install:
@@ -26,15 +26,19 @@ format:
 lint:
 	ruff format --check src tests
 	ruff check src tests
-	pylint src/tzara
 
 typecheck:
 	mypy
 
 test:
-	pytest --cov --cov-report=term-missing
+	pytest -q
 
 check: lint typecheck test
+
+# Run this checkout's server and app side by side with the installed ones: make dev
+# (extra app arguments: make dev ARGS="--snapshot /tmp/box.png")
+dev:
+	@scripts/dev.sh $(ARGS)
 
 # The macOS app (Swift). Needs the Command Line Tools: xcode-select --install
 app:

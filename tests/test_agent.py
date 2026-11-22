@@ -9,44 +9,32 @@ import pytest
 from langchain_core._api import LangChainBetaWarning
 from langchain_ollama import ChatOllama
 
-from helpers import PromptAwareFakeModel, RecordingFakeModel
+from helpers import PromptAwareFakeModel, RecordingFakeModel, fake_creator
 from tzara.agent import Tzara
 from tzara.agent.memory import ConversationMemory, HistoryMessage
 from tzara.config import TzaraConfig
 
-# The fake model's provider name, so the harness profile applies to it.
-FAKE_PROVIDER = "recordingfakemodel"
-
 EXPECTED_TOOLS = {
-    "ls",
-    "read_file",
-    "write_file",
-    "edit_file",
-    "glob",
-    "grep",
-    "task",
-    "write_todos",
-    "calculator",
-    "web_search",
     "read_webpage",
+    "research",
 }
 
 # Only offered on a Mac, so the expected set depends on where the tests run.
 MAC_TOOLS = {"open_app", "open_website", "open_path", "control_media"}
 
 # Cold start costs about 5 ms per tool-description character on a local model.
-# Fail loudly if the prompt grows back towards DeepAgents' ~19k-character default.
-TOOL_DESCRIPTION_BUDGET = 8000
+# Fail loudly if the tool descriptions grow.
+TOOL_DESCRIPTION_BUDGET = 3500
 
 
 def agent_with_fake_model(
     *replies: str, memory: ConversationMemory | None = None, **config_overrides
 ) -> tuple[Tzara, RecordingFakeModel]:
     """Build an agent whose chat model is a fake that gives ``replies`` in turn."""
-    config = TzaraConfig(harness_providers=(FAKE_PROVIDER,), **config_overrides)
+    config = TzaraConfig(**config_overrides)
     agent = Tzara(config=config, memory=memory)
     model = RecordingFakeModel.replying(*(replies or ("Hello there",)))
-    agent._factory.create = lambda _spec: model  # type: ignore[assignment,method-assign]
+    agent._factory.create = fake_creator(model)  # type: ignore[method-assign]
     agent._create_agent()
     return agent, model
 
@@ -166,18 +154,11 @@ class TestPromptSentToTheModel:
         total = sum(len(tool_description(tool)) for tool in seen.bound_tools)
         assert total < TOOL_DESCRIPTION_BUDGET
 
-    def test_todo_tool_uses_the_concise_description(self, seen):
-        todo = next(tool for tool in seen.bound_tools if tool_name(tool) == "write_todos")
-        assert tool_description(todo) == TzaraConfig().prompts.todo_tool
-
     def test_system_prompt_has_tzaras_persona_and_not_the_coding_agent_default(self, seen):
         system_prompt = seen.seen_messages[0][0].text
         assert TzaraConfig().prompts.rendered_system() in system_prompt
-        assert TzaraConfig().prompts.base in system_prompt
         assert "You are a deep agent" not in system_prompt
-
-    def test_only_one_todo_prompt_section_is_present(self, seen):
-        assert seen.seen_messages[0][0].text.count("## `write_todos`") == 1
+        assert "Filesystem" not in system_prompt
 
 
 class TestMemory:
@@ -233,16 +214,16 @@ class TestMemory:
 
 
 class TestSummaryOutputIsNotShown:
-    """DeepAgents summarizes old turns by calling the same model mid-turn."""
+    """The agent summarizes old turns by calling the same model mid-turn."""
 
     def test_the_summary_is_not_streamed_into_the_reply(self):
-        config = TzaraConfig(harness_providers=(FAKE_PROVIDER,))
+        config = TzaraConfig()
         agent = Tzara(config=config)
         # A tiny context budget, so a few long turns trigger summarization.
         model = PromptAwareFakeModel(
             messages=iter(()), bound_tools=[], seen_messages=[], profile={"max_input_tokens": 400}
         )
-        agent._factory.create = lambda _spec: model  # type: ignore[assignment,method-assign]
+        agent._factory.create = fake_creator(model)  # type: ignore[method-assign]
         agent._create_agent()
 
         padding = "word " * 200
@@ -253,12 +234,12 @@ class TestSummaryOutputIsNotShown:
         assert PromptAwareFakeModel.SUMMARY not in "".join(replies)
 
     def test_the_summary_is_logged(self, caplog):
-        config = TzaraConfig(harness_providers=(FAKE_PROVIDER,))
+        config = TzaraConfig()
         agent = Tzara(config=config)
         model = PromptAwareFakeModel(
             messages=iter(()), bound_tools=[], seen_messages=[], profile={"max_input_tokens": 400}
         )
-        agent._factory.create = lambda _spec: model  # type: ignore[assignment,method-assign]
+        agent._factory.create = fake_creator(model)  # type: ignore[method-assign]
         agent._create_agent()
 
         with caplog.at_level(logging.INFO, logger="tzara"):
@@ -391,3 +372,19 @@ class TestHistory:
         list(agent.handle("question one"))
         agent.interrupt()
         assert [item.text for item in agent.history()] == ["question one", "first reply"]
+
+
+class TestSpentEvidence:
+    def test_the_evidence_is_replaced_by_a_note_after_the_answer(self):
+        from langchain_core.messages import ToolMessage
+
+        agent, _ = agent_with_fake_model()
+        note = agent._config.prompts.research_spent
+        agent._agent.update_state(
+            agent.memory.run_config,
+            {"messages": [ToolMessage(content="x" * 5000, tool_call_id="t1", name="research")]},
+            as_node="tools",
+        )
+        agent._drop_spent_evidence()
+        messages = agent._agent.get_state(agent.memory.run_config).values["messages"]
+        assert [m.text for m in messages if m.type == "tool"] == [note]

@@ -65,6 +65,27 @@ public final class ChatClient: @unchecked Sendable {
         try await decoded(Conversation.self, path: "/v1/conversation").messages
     }
 
+    /// What Tzara remembers about the user, for the settings screen.
+    public func memory() async throws -> MemoryOverview {
+        try await decoded(MemoryOverview.self, path: "/v1/memory")
+    }
+
+    /// Makes Tzara forget one remembered fact.
+    public func forgetFact(_ id: Int) async throws {
+        _ = try await send(path: "/v1/memory/facts/\(id)", method: "DELETE")
+    }
+
+    /// Makes Tzara forget everything: every fact, every stored conversation, and this one.
+    public func eraseMemory() async throws {
+        _ = try await send(path: "/v1/memory", method: "DELETE")
+    }
+
+    /// Gets the model ready if it has been idle, so that it is loaded by the time the user has
+    /// typed. Returns at once, and failing is harmless: it is only a head start.
+    public func wake() async {
+        _ = try? await send(path: "/v1/wake", method: "POST")
+    }
+
     /// Switches to another model. The conversation carries over. Takes about fifteen seconds.
     ///
     /// - Returns: The model now in use.
@@ -107,7 +128,7 @@ public final class ChatClient: @unchecked Sendable {
                         continuation.yield(event)
                         switch event {
                         case .done, .error: continuation.finish(); return
-                        case .token: break
+                        case .token, .status, .tool: break
                         }
                     }
                     continuation.finish()
@@ -138,7 +159,7 @@ public final class ChatClient: @unchecked Sendable {
     // MARK: - Plumbing
 
     private func makeRequest(
-        path: String, method: String, body: [String: String]? = nil, timeout: TimeInterval
+        path: String, method: String, body: (any Encodable)? = nil, timeout: TimeInterval
     ) throws -> URLRequest {
         let credentials: ServerCredentials
         do {
@@ -152,13 +173,13 @@ public final class ChatClient: @unchecked Sendable {
         request.setValue("Bearer \(credentials.token)", forHTTPHeaderField: "Authorization")
         if let body {
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-            request.httpBody = try JSONEncoder().encode(body)
+            request.httpBody = try JSONEncoder().encode(AnyEncodable(body))
         }
         return request
     }
 
     private func send(
-        path: String, method: String, body: [String: String]? = nil, timeout: TimeInterval = ChatClient.quickTimeout
+        path: String, method: String, body: (any Encodable)? = nil, timeout: TimeInterval = ChatClient.quickTimeout
     ) async throws -> Data {
         let request = try makeRequest(path: path, method: method, body: body, timeout: timeout)
         let (data, response) = try await perform(request)
@@ -167,7 +188,7 @@ public final class ChatClient: @unchecked Sendable {
     }
 
     private func decoded<Value: Decodable>(
-        _ type: Value.Type, path: String, method: String = "GET", body: [String: String]? = nil,
+        _ type: Value.Type, path: String, method: String = "GET", body: (any Encodable)? = nil,
         timeout: TimeInterval = ChatClient.quickTimeout
     ) async throws -> Value {
         let data = try await send(path: path, method: method, body: body, timeout: timeout)
@@ -223,4 +244,10 @@ public final class ChatClient: @unchecked Sendable {
     private struct Conversation: Decodable { let messages: [HistoryItem] }
     private struct ModelAnswer: Decodable { let model: String }
     private struct NameAnswer: Decodable { let name: String }
+    /// Lets a request body be any `Encodable` value, not only a dictionary of strings.
+    private struct AnyEncodable: Encodable {
+        let value: any Encodable
+        init(_ value: any Encodable) { self.value = value }
+        func encode(to encoder: Encoder) throws { try value.encode(to: encoder) }
+    }
 }

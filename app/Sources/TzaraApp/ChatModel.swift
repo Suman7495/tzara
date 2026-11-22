@@ -26,9 +26,21 @@ final class ChatModel: ObservableObject {
 
     @Published private(set) var messages: [ChatMessage] = []
     @Published var draft = ""
-    @Published private(set) var phase: Phase = .idle
+    @Published private(set) var phase: Phase = .idle {
+        didSet { if phase != .idle, oldValue == .idle { onWorking?() } }
+    }
+    /// Called when a reply starts being written.
+    var onWorking: (() -> Void)?
+    /// Called when the user stops the reply.
+    var onStopped: (() -> Void)?
+    /// Called when a reply ends by itself (finished or failed), not when the user stops it.
+    var onReplyEnded: (() -> Void)?
     /// A problem or hint shown above the input, such as "the server isn't running".
     @Published private(set) var notice: String?
+    /// What the assistant is doing right now ("Searching the web for ..."), while it works.
+    @Published private(set) var activity: String?
+    /// How many tools are running right now. The assistant can use several at once.
+    private var runningTools = 0
     /// What the assistant is called.
     @Published private(set) var assistantName = "Tzara"
     @Published private(set) var isRenaming = false
@@ -41,10 +53,12 @@ final class ChatModel: ObservableObject {
     let settings: SettingsModel
     private let client: ChatClient
     private var replyTask: Task<Void, Never>?
-
     init(client: ChatClient) {
         self.client = client
         settings = SettingsModel(client: client)
+        settings.onMemoryErased = { [weak self] in
+            self?.messages = []
+        }
     }
 
     var canSend: Bool {
@@ -56,14 +70,23 @@ final class ChatModel: ObservableObject {
         showingSettings = false
         focusRequest += 1
         scrollRequest += 1
+        // Opening the box is the moment to get an idle model ready, so it is loaded while the
+        // user is still typing.
+        Task { await client.wake() }
         Task { await refresh() }
     }
+
+    /// How long a message waits for a model that is still loading before giving up.
+    private static let loadWaitSeconds = 90
 
     func send() {
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard canSend, !text.isEmpty else { return }
-
         draft = ""
+        deliver(text)
+    }
+
+    private func deliver(_ text: String) {
         notice = nil
         messages.append(ChatMessage(role: .user, text: text))
         let reply = ChatMessage(role: .assistant, text: "")
@@ -71,24 +94,42 @@ final class ChatModel: ObservableObject {
         phase = .waiting
 
         replyTask = Task {
-            do {
-                for try await event in client.stream(text) {
-                    switch event {
-                    case let .token(piece):
-                        append(piece, toMessage: reply.id)
-                        phase = .streaming
-                    case let .error(message):
-                        notice = message
-                    case .done:
-                        break
+            var waited = 0
+            while true {
+                do {
+                    for try await event in client.stream(text) {
+                        switch event {
+                        case let .status(text):
+                            activity = text
+                        case let .tool(_, state):
+                            toolChanged(state)
+                        case let .token(piece):
+                            activity = nil  // writing the answer means the tools are done
+                            append(piece, toMessage: reply.id)
+                            phase = .streaming
+                        case let .error(message):
+                            notice = message
+                        case .done:
+                            break
+                        }
                     }
+                } catch ChatClientError.notReady where waited < Self.loadWaitSeconds {
+                    // The model is still loading (a restart, an update): wait for it, as the
+                    // user would have, instead of showing an error they must retry by hand.
+                    activity = "Loading the model\u{2026}"
+                    waited += 1
+                    if (try? await Task.sleep(nanoseconds: 1_000_000_000)) != nil { continue }
+                } catch {
+                    notice = Self.describe(error)
                 }
-            } catch {
-                notice = Self.describe(error)
+                break
             }
             removeIfEmpty(messageID: reply.id)
+            activity = nil
+            runningTools = 0
             phase = .idle
             replyTask = nil
+            if !Task.isCancelled { onReplyEnded?() }
         }
     }
 
@@ -97,7 +138,10 @@ final class ChatModel: ObservableObject {
         guard phase != .idle else { return }
         replyTask?.cancel()  // closing the connection also tells the server to stop
         replyTask = nil
+        activity = nil
+        runningTools = 0
         phase = .idle
+        onStopped?()
         Task { await client.interrupt() }
     }
 
@@ -172,6 +216,15 @@ final class ChatModel: ObservableObject {
         messages = loaded
         scrollRequest += 1
         FileLog.shared.info("restored \(loaded.count) messages of the conversation from the server")
+    }
+
+    /// Keeps count of running tools, and forgets what was being done once the last one is over.
+    private func toolChanged(_ state: ToolState) {
+        switch state {
+        case .started: runningTools += 1
+        case .completed, .failed: runningTools = max(runningTools - 1, 0)
+        }
+        if runningTools == 0 { activity = nil }
     }
 
     private func append(_ piece: String, toMessage id: UUID) {

@@ -50,6 +50,11 @@ class ServerPaths:
         return self.directory / self.INFO_NAME
 
     @property
+    def memory_dir(self) -> Path:
+        """Directory holding the memory database."""
+        return self.directory
+
+    @property
     def name_file(self) -> Path:
         """File holding the assistant's name."""
         return self.directory / self.NAME_NAME

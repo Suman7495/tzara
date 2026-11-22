@@ -11,7 +11,9 @@ from typing import ClassVar
 
 from tzara.config import ConfigError, TzaraConfig
 from tzara.logs import LogConfigurator
+from tzara.memory import PersonalMemory
 from tzara.server.daemon import DaemonError, DaemonManager, DaemonStatus
+from tzara.server.files import ServerPaths
 
 logger = logging.getLogger(__name__)
 
@@ -88,14 +90,23 @@ class Launcher:
     def chat(self) -> int:
         """Open the interactive chat."""
         # Imported here so that `tzara status` does not pay for loading the agent.
-        from tzara.cli.run import TzaraCLI  # pylint: disable=import-outside-toplevel
+        from tzara.agent.memory import ConversationMemory
+        from tzara.cli.run import TzaraCLI
 
-        TzaraCLI(config=self._config, log_path=self._log_path).run()
+        personal = PersonalMemory.open(
+            self._config.memory, ServerPaths.from_settings(self._config.server).directory
+        )
+        TzaraCLI(
+            config=self._config,
+            log_path=self._log_path,
+            memory=ConversationMemory(log=personal.log if personal else None),
+            personal=personal,
+        ).run()
         return EXIT_OK
 
     def serve(self) -> int:
         """Run the server in this terminal until it is stopped."""
-        from tzara.server.app import TzaraServer  # pylint: disable=import-outside-toplevel
+        from tzara.server.app import TzaraServer
 
         TzaraServer.serve(self._config)
         return EXIT_OK
@@ -122,7 +133,7 @@ class Launcher:
 
     def setup(self) -> int:
         """Set up Ollama, the model, the server and the macOS app."""
-        from tzara.installer.setup import (  # pylint: disable=import-outside-toplevel
+        from tzara.installer.setup import (
             Installer,
             SetupOptions,
         )
@@ -137,7 +148,7 @@ class Launcher:
 
     def uninstall(self) -> int:
         """Remove the server's login job and the macOS app."""
-        from tzara.installer.setup import Installer  # pylint: disable=import-outside-toplevel
+        from tzara.installer.setup import Installer
 
         return Installer.create(self._config).uninstall()
 

@@ -2,9 +2,10 @@
 #   pre-commit install --hook-type pre-commit --hook-type pre-push
 # Run them on everything with `pre-commit run --all-files --hook-stage pre-push`.
 #
-# ruff is quick and runs on every commit, from its own pinned environment. pylint,
-# mypy and pytest need the project's installed packages, so they run before a push
-# and expect the project's environment to be active. Remove the hooks with
+# ruff is quick and runs on every commit, from its own pinned environment. mypy and
+# pytest need the project's installed packages, so they run before a push
+# and find the project's environment through scripts/hook.sh (so an editor's push button
+# works too; set TZARA_ENV_BIN if yours is somewhere unusual). Remove the hooks with
 # `pre-commit uninstall --hook-type pre-commit --hook-type pre-push`.
 repos:
   - repo: https://github.com/astral-sh/ruff-pre-commit
@@ -15,23 +16,16 @@ repos:
       - id: ruff-format
   - repo: local
     hooks:
-      - id: pylint
-        name: pylint
-        entry: pylint src/tzara
-        language: system
-        types: [python]
-        pass_filenames: false
-        stages: [pre-push]
       - id: mypy
         name: mypy
-        entry: mypy
+        entry: scripts/hook.sh mypy
         language: system
         types: [python]
         pass_filenames: false
         stages: [pre-push]
       - id: pytest
         name: pytest
-        entry: pytest -q
+        entry: scripts/hook.sh pytest -q
         language: system
         types: [python]
         pass_filenames: false

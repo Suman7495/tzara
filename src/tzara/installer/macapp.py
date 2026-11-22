@@ -25,7 +25,7 @@ class AppInstaller:
 
     PROCESS_NAME = "Tzara"
 
-    def __init__(  # pylint: disable=too-many-arguments,too-many-positional-arguments
+    def __init__(
         self,
         settings: InstallerSettings,
         version: str,

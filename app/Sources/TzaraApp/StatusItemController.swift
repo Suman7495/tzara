@@ -8,18 +8,20 @@ final class StatusItemController: NSObject, NSMenuDelegate {
     private let hotkey: HotkeyMonitor
     private let chatBox: ChatBoxController
     private let permissionItem = NSMenuItem()
+    private let openItem = NSMenuItem(title: "Open Tzara", action: #selector(openChat), keyEquivalent: "")
 
     init(hotkey: HotkeyMonitor, chatBox: ChatBoxController) {
         self.hotkey = hotkey
         self.chatBox = chatBox
         super.init()
 
-        statusItem.button?.image = NSImage(
-            systemSymbolName: "bubble.left.and.bubble.right", accessibilityDescription: "Tzara")
+        show(.idle)
+        chatBox.onIndicator = { [weak self] indicator in self?.show(indicator) }
         let menu = NSMenu()
         menu.delegate = self
 
-        menu.addItem(withTitle: "Open Tzara", action: #selector(openChat), keyEquivalent: "").target = self
+        openItem.target = self
+        menu.addItem(openItem)
         menu.addItem(.separator())
         permissionItem.isEnabled = false
         menu.addItem(permissionItem)
@@ -29,6 +31,18 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         menu.addItem(.separator())
         menu.addItem(withTitle: "Quit Tzara", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         statusItem.menu = menu
+    }
+
+    /// Changes the icon: busy while a reply is written, marked when one is waiting to be read.
+    private func show(_ indicator: ChatBoxController.Indicator) {
+        let (symbol, description, title) =
+            switch indicator {
+            case .idle: ("bubble.left.and.bubble.right", "Tzara", "Open Tzara")
+            case .working: ("ellipsis.bubble", "Tzara is working", "Open Tzara (working\u{2026})")
+            case .ready: ("bubble.left.and.bubble.right.fill", "Tzara has a reply", "Open Tzara \u{2013} reply ready")
+            }
+        statusItem.button?.image = NSImage(systemSymbolName: symbol, accessibilityDescription: description)
+        openItem.title = title
     }
 
     func menuNeedsUpdate(_ menu: NSMenu) {

@@ -12,12 +12,24 @@ final class ChatBoxController {
     /// (`panel.isVisible`) is not a reliable way to know this.
     private(set) var isOpen = false
 
+    /// What the menu-bar icon should show about the reply.
+    enum Indicator { case idle, working, ready }
+    var onIndicator: ((Indicator) -> Void)?
+    /// Whether a reply is being written, which may be while the box is hidden.
+    var isWorking: Bool { model.phase != .idle }
+
     init(client: ChatClient, hotkeyIsActive: @escaping () -> Bool) {
         model = ChatModel(client: client)
         panel = ChatBoxPanel(contentSize: ChatView.size)
         let view = ChatView(model: model, onClose: { [weak self] in self?.hide() }, hotkeyIsActive: hotkeyIsActive)
         panel.contentView = NSHostingView(rootView: view)
         panel.onCancel = { [weak self] in self?.hide() }
+        model.onWorking = { [weak self] in self?.onIndicator?(.working) }
+        model.onStopped = { [weak self] in self?.onIndicator?(.idle) }
+        model.onReplyEnded = { [weak self] in
+            guard let self else { return }
+            onIndicator?(isOpen ? .idle : .ready)
+        }
         FileLog.shared.info("chat box created; panel.isVisible at creation = \(panel.isVisible)")
     }
 
@@ -38,6 +50,7 @@ final class ChatBoxController {
         model.panelDidShow()
         model.showingSettings = settings
         isOpen = true
+        onIndicator?(isWorking ? .working : .idle)
         FileLog.shared.info("chat box shown: pointer \(cursor.debugDescription), box \(frame.debugDescription)")
     }
 
@@ -51,8 +64,21 @@ final class ChatBoxController {
         FileLog.shared.info("snapshot written to \(path)")
     }
 
+    /// Sends Command+V to the box, as if it had been typed, through the same path a real key
+    /// press takes. Used by `--press-paste` to check that pasting works without touching the
+    /// keyboard, which would type into whatever app is in front.
+    func pressPaste() {
+        guard let event = NSEvent.keyEvent(
+            with: .keyDown, location: .zero, modifierFlags: .command, timestamp: 0,
+            windowNumber: panel.windowNumber, context: nil, characters: "v",
+            charactersIgnoringModifiers: "v", isARepeat: false, keyCode: 9)
+        else { return }
+        NSApp.sendEvent(event)
+        FileLog.shared.info("sent Command+V to the box")
+    }
+
     func hide() {
-        model.cancelReply()
+        // A reply being written carries on in the background; Stop is what cancels it.
         panel.orderOut(nil)
         isOpen = false
         FileLog.shared.info("chat box hidden")

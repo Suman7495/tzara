@@ -71,6 +71,35 @@ public struct HistoryItem: Decodable, Equatable, Sendable {
     }
 }
 
+/// One thing Tzara remembers about the user.
+public struct MemoryFact: Decodable, Equatable, Identifiable, Sendable {
+    public let id: Int
+    public let text: String
+    /// When it was first remembered, as seconds since 1970.
+    public let created: Double
+
+    public init(id: Int, text: String, created: Double = 0) {
+        self.id = id
+        self.text = text
+        self.created = created
+    }
+}
+
+/// Everything Tzara remembers, as the server reports it.
+public struct MemoryOverview: Decodable, Equatable, Sendable {
+    /// Whether memory is on at all (`TZARA_MEMORY=false` turns it off).
+    public let enabled: Bool
+    public let facts: [MemoryFact]
+    /// How many past conversations are stored.
+    public let conversations: Int
+
+    public init(enabled: Bool, facts: [MemoryFact], conversations: Int) {
+        self.enabled = enabled
+        self.facts = facts
+        self.conversations = conversations
+    }
+}
+
 /// The rules for what the assistant may be called, the same ones the server enforces.
 public enum AssistantName {
     public static let maximumLength = 40

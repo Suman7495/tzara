@@ -278,7 +278,7 @@ class OpenApp(BaseTool):
         super().__init__(description=description)
         self._opener = opener
 
-    def _run(self, name: str) -> str:  # pylint: disable=arguments-differ
+    def _run(self, name: str) -> str:
         """Open the application; errors come back as text."""
         try:
             return self._opener.open(name)
@@ -304,7 +304,7 @@ class OpenWebsite(BaseTool):
         super().__init__(description=description)
         self._opener = opener
 
-    def _run(self, url: str) -> str:  # pylint: disable=arguments-differ
+    def _run(self, url: str) -> str:
         """Open the address; errors come back as text."""
         try:
             return self._opener.open(url)
@@ -330,7 +330,7 @@ class OpenPath(BaseTool):
         super().__init__(description=description)
         self._opener = opener
 
-    def _run(self, path: str) -> str:  # pylint: disable=arguments-differ
+    def _run(self, path: str) -> str:
         """Open the file or folder; errors come back as text."""
         try:
             return self._opener.open(path)
@@ -356,7 +356,7 @@ class ControlMedia(BaseTool):
         super().__init__(description=description)
         self._controller = controller
 
-    def _run(self, action: str, level: int | None = None) -> str:  # pylint: disable=arguments-differ
+    def _run(self, action: str, level: int | None = None) -> str:
         """Do the media action; errors come back as text."""
         try:
             return self._controller.control(action, level)

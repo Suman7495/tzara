@@ -21,8 +21,10 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, field_validator
 
+from tzara.agent.memory import ConversationMemory
 from tzara.agent.models import ModelCatalog
 from tzara.config import ServerSettings, TzaraConfig
+from tzara.memory import PersonalMemory
 from tzara.server.files import NameStore, ServerInfo, ServerInfoFile, ServerPaths, TokenStore
 from tzara.server.service import (
     ChatService,
@@ -30,7 +32,9 @@ from tzara.server.service import (
     ServiceBusy,
     ServiceNotReady,
     ServiceState,
+    StatusEvent,
     TokenEvent,
+    ToolEvent,
     TurnEvent,
 )
 
@@ -104,7 +108,9 @@ class TzaraServer:
     requests), and must present the secret token.
 
     Replies stream as server-sent events (``text/event-stream``): ``token``
-    events with pieces of text, then one ``done`` or ``error`` event.
+    events with pieces of text, ``status`` events saying what the agent is doing while it
+    works, ``tool`` events when a tool starts or finishes, then one ``done`` or ``error``
+    event.
     """
 
     STREAM_HEADERS: ClassVar[dict[str, str]] = {
@@ -161,7 +167,9 @@ class TzaraServer:
         saved_name = names.load()
         if saved_name and len(saved_name) <= config.server.max_name_chars:
             config = replace(config, prompts=replace(config.prompts, assistant_name=saved_name))
-        service = ChatService(config, name_store=names)
+        personal = PersonalMemory.open(config.memory, paths.memory_dir)
+        conversation = ConversationMemory(log=personal.log if personal else None)
+        service = ChatService(config, memory=conversation, name_store=names, personal=personal)
         server = cls(service, token, config.server, ServerInfoFile(paths.info_file))
         logger.info("serving on http://%s:%d", config.server.HOST, config.server.port)
         uvicorn_config = uvicorn.Config(
@@ -239,6 +247,17 @@ class TzaraServer:
         self._app.add_api_route(
             "/v1/conversation", self.conversation, methods=["GET"], dependencies=protected
         )
+        self._app.add_api_route("/v1/wake", self.wake, methods=["POST"], dependencies=protected)
+        self._app.add_api_route("/v1/memory", self.memory, methods=["GET"], dependencies=protected)
+        self._app.add_api_route(
+            "/v1/memory/facts/{fact_id}",
+            self.forget_fact,
+            methods=["DELETE"],
+            dependencies=protected,
+        )
+        self._app.add_api_route(
+            "/v1/memory", self.erase_memory, methods=["DELETE"], dependencies=protected
+        )
 
     async def health(self) -> dict[str, str]:
         """Say that the server is up. Needs no token and reveals nothing else."""
@@ -273,6 +292,36 @@ class TzaraServer:
         """Return the conversation so far, so a client can show it again."""
         history = await asyncio.to_thread(self._service.history)
         return {"messages": [{"role": item.role, "text": item.text} for item in history]}
+
+    async def wake(self) -> JSONResponse:
+        """Get the model ready if it has been idle. Returns at once; the work goes on behind."""
+        return JSONResponse({"waking": self._service.wake()}, status_code=202)
+
+    async def memory(self) -> dict[str, Any]:
+        """List what Tzara remembers about the user, so they can see it."""
+        return await asyncio.to_thread(self._service.memory_overview)
+
+    async def forget_fact(self, fact_id: int) -> Response:
+        """Forget one remembered fact.
+
+        Raises:
+            HTTPException: 404 if there is no such fact.
+        """
+        if not await asyncio.to_thread(self._service.forget_fact, fact_id):
+            raise HTTPException(status_code=404, detail="no such fact")
+        return Response(status_code=204)
+
+    async def erase_memory(self) -> Response:
+        """Forget everything: all facts, all stored conversations, and the current one.
+
+        Raises:
+            HTTPException: 409 if a reply is being written.
+        """
+        try:
+            await asyncio.to_thread(self._service.erase_memory)
+        except ServiceBusy as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+        return Response(status_code=204)
 
     async def chat(self, body: ChatRequest) -> StreamingResponse:
         """Answer a message, streaming the reply as server-sent events.
@@ -358,7 +407,7 @@ class TzaraServer:
             await asyncio.to_thread(self._service.switch_model, body.model)
         except ServiceBusy as error:
             raise HTTPException(status_code=409, detail=str(error)) from error
-        except Exception as error:  # pylint: disable=broad-exception-caught
+        except Exception as error:
             logger.exception("could not switch to %s", body.model)
             raise HTTPException(
                 status_code=502, detail=f"could not load {body.model}: {error}"
@@ -378,7 +427,7 @@ class TzaraServer:
             raise HTTPException(status_code=422, detail=str(error)) from error
         except ServiceBusy as error:
             raise HTTPException(status_code=409, detail=str(error)) from error
-        except Exception as error:  # pylint: disable=broad-exception-caught
+        except Exception as error:
             logger.exception("could not rename the assistant")
             raise HTTPException(status_code=502, detail=f"could not rename: {error}") from error
         return {"name": self._service.name}
@@ -389,6 +438,10 @@ class TzaraServer:
         data: dict[str, Any]
         if isinstance(event, TokenEvent):
             name, data = "token", {"text": event.text}
+        elif isinstance(event, StatusEvent):
+            name, data = "status", {"text": event.text}
+        elif isinstance(event, ToolEvent):
+            name, data = "tool", {"name": event.name, "state": event.state}
         elif isinstance(event, DoneEvent):
             name = "done"
             data = {

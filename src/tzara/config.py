@@ -95,6 +95,9 @@ class ServerSettings:
         max_name_chars: Longest name the assistant may be given.
         startup_timeout: Seconds ``tzara start`` waits for the server to answer.
         stop_timeout: Seconds ``tzara stop`` waits for the server to exit.
+        wake_after_seconds: How long the server must have been idle before a client opening its
+            chat box makes it get the model ready again. Ollama unloads an idle model, and loading
+            it takes seconds the user would otherwise wait through after typing.
         heartbeat_seconds: How long a reply stream may stay silent before the server
             sends a keep-alive comment, so clients with a read timeout don't drop a
             healthy connection while the model is thinking.
@@ -110,6 +113,7 @@ class ServerSettings:
     startup_timeout: float = 30.0
     stop_timeout: float = 15.0
     heartbeat_seconds: float = 10.0
+    wake_after_seconds: float = 120.0
     data_dir: Path | None = None
 
     def __post_init__(self) -> None:
@@ -123,10 +127,14 @@ class ServerSettings:
             raise ConfigError(f"port must be between 1 and 65535, got {self.port}")
         if self.heartbeat_seconds <= 0:
             raise ConfigError(f"heartbeat_seconds must be positive, got {self.heartbeat_seconds}")
+        if self.wake_after_seconds < 0:
+            raise ConfigError(
+                f"wake_after_seconds must not be negative, got {self.wake_after_seconds}"
+            )
 
 
 @dataclass(frozen=True)
-class InstallerSettings:  # pylint: disable=too-many-instance-attributes
+class InstallerSettings:
     """Where ``tzara setup`` gets things from and puts them.
 
     Attributes:
@@ -169,63 +177,62 @@ class InstallerSettings:  # pylint: disable=too-many-instance-attributes
 
 
 @dataclass(frozen=True)
-class WebSettings:  # pylint: disable=too-many-instance-attributes
+class WebSettings:
     """Settings for searching the web and reading pages.
 
     This is the one feature that sends something off the machine: the search
-    query goes to the search provider, and pages are fetched from their sites.
+    query goes to DuckDuckGo, and pages are fetched from their sites.
     The model and the conversation stay local.
 
     Attributes:
         enabled: Whether the agent gets the web tools at all.
-        provider: ``duckduckgo`` (no account or key) or ``gemini`` (Google Search
-            through the Gemini API, needs the key named by ``gemini_key_variable``).
-        max_results: Search results returned to the model.
+        max_results: Search results returned per search.
         max_page_chars: Most text of one page given to the model (about four
             characters per token, so the context window is not filled by one page).
         max_download_bytes: Most bytes read from one page.
         max_redirects: Redirects followed for one page, each checked again.
-        timeout_seconds: Network timeout for a search or a page.
+        timeout_seconds: Network timeout for a page.
+        search_timeout_seconds: How long one search may take. The search engine either answers in
+            a second or two or not at all, so waiting longer only makes the answer slower.
+        search_attempts: Times a search is tried when the search engine does not answer.
         user_agent: Sent when fetching pages.
-        gemini_model: Gemini model used to search when ``provider`` is ``gemini``.
-        gemini_key_variable: Environment variable holding the Gemini API key.
-        gemini_url: Gemini API endpoint; ``{model}`` is replaced by ``gemini_model``.
+        region: The search engine's region, which decides the language of the results.
+        engines: Which engines ``ddgs`` asks, in order, as a comma-separated list. Its default,
+            all of them in turn, spends seconds on engines that do not answer from many networks
+            (DuckDuckGo's own page, Yandex): a fixed list of ones that do took 1-2 s instead of 7.
+        cache_seconds: How long a search result or a page is remembered, so a follow-up question
+            on the same subject does not fetch it again.
+        max_html_chars: Most HTML read from one page, so a huge or hostile page cannot stall it.
     """
 
-    PROVIDERS: ClassVar[tuple[str, ...]] = ("duckduckgo", "gemini")
-
     enabled: bool = True
-    provider: str = "duckduckgo"
-    max_results: int = 5
+    max_results: int = 8
     max_page_chars: int = 6000
     max_download_bytes: int = 2_000_000
     max_redirects: int = 3
-    timeout_seconds: float = 15.0
+    timeout_seconds: float = 6.0
+    search_timeout_seconds: float = 4.0
+    search_attempts: int = 2
     user_agent: str = "Mozilla/5.0 (compatible; Tzara; +https://github.com/Suman7495/tzara)"
-    gemini_model: str = "gemini-3.5-flash"
-    gemini_key_variable: str = "GOOGLE_API_KEY"
-    gemini_url: str = (
-        "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
-    )
+    region: str = "us-en"
+    engines: str = "bing,google,brave,yahoo,startpage"
+    cache_seconds: float = 900.0
+    max_html_chars: int = 1_000_000
 
     def __post_init__(self) -> None:
-        """Check the provider and the limits.
+        """Check the limits.
 
         Raises:
-            ConfigError: If ``provider`` is unknown or a limit is not positive.
+            ConfigError: If a limit is not positive.
         """
-        if self.provider not in self.PROVIDERS:
-            raise ConfigError(
-                f"web search provider must be one of {', '.join(self.PROVIDERS)}, "
-                f"got {self.provider!r}"
-            )
         limits = (
             self.max_results,
             self.max_page_chars,
             self.max_download_bytes,
             self.timeout_seconds,
+            self.max_html_chars,
         )
-        if any(limit <= 0 for limit in limits) or self.max_redirects < 0:
+        if any(limit <= 0 for limit in limits) or self.max_redirects < 0 or self.cache_seconds < 0:
             raise ConfigError("web search limits must be positive")
 
 
@@ -280,7 +287,233 @@ class SystemSettings:
 
 
 @dataclass(frozen=True)
-class CLISettings:  # pylint: disable=too-many-instance-attributes
+class ResearchSettings:
+    """Settings for the ``research`` tool, which reads pages instead of only search snippets.
+
+    Attributes:
+        max_query_chars: Longest search query kept.
+        keyword_words: Most words in the second search, made of the question's key words.
+        pages: How many pages to read.
+        listed: How many results are listed in the evidence, the rest of them with their search
+            snippets only.
+        max_per_host: Most pages from one site, so one site cannot fill the answer.
+        page_chars: Most text kept from one page: the passages that match the question.
+        total_chars: Most text returned to the model in all; the context window is small.
+        links: How many ready-made source links are listed at the end of the evidence.
+        code_blocks: How many code blocks from the pages are given to the model, so that it
+            copies working code instead of writing its own.
+        code_chars: Longest code block kept.
+        address_bonus: Added to a page's score when the user wrote its address.
+        authority_bonus: Added to a page's rank when its site is official, a reference or
+            documentation (see :class:`SourceAuthority`).
+        official_suffixes: Address endings of governments, universities and international bodies.
+        reference_hosts: Reference works, health bodies and publishers of papers.
+        docs_prefixes: First parts of an address that mean documentation (``docs.python.org``).
+        docs_hosts: Sites that host the documentation of many projects.
+        authority_sites: Where an extra search looks for questions about health, law or money.
+        authority_words: Words in a question that make it one of those.
+        grace_seconds: How long the slower searches and pages may take once one has answered.
+        skip_hosts: Sites that need a login or are mostly video, so never worth reading.
+        question_starts: First words that make a message a question for the web ("what", "how").
+        question_words: Words anywhere in a message that ask for facts, advice or comparisons.
+        chat_patterns: Regular expressions for messages that need no web even if they look like
+            questions: small talk, questions about the user, arithmetic, commands for the Mac.
+    """
+
+    max_query_chars: int = 100
+    keyword_words: int = 8
+    pages: int = 4
+    listed: int = 6
+    max_per_host: int = 2
+    page_chars: int = 1500
+    total_chars: int = 4400
+    links: int = 4
+    code_blocks: int = 2
+    code_chars: int = 600
+    address_bonus: int = 20
+    authority_bonus: int = 5
+    official_suffixes: tuple[str, ...] = (
+        ".gov",
+        ".gov.uk",
+        ".edu",
+        ".ac.uk",
+        ".int",
+        ".mil",
+        "europa.eu",
+    )
+    reference_hosts: tuple[str, ...] = (
+        "wikipedia.org",
+        "britannica.com",
+        "nih.gov",
+        "nhs.uk",
+        "mayoclinic.org",
+        "cochrane.org",
+        "arxiv.org",
+        "doi.org",
+        "nature.com",
+        "sciencedirect.com",
+        "springer.com",
+        "who.int",
+    )
+    docs_prefixes: tuple[str, ...] = ("docs", "developer", "developers", "learn", "devdocs")
+    docs_hosts: tuple[str, ...] = ("readthedocs.io", "developer.mozilla.org", "github.io")
+    authority_sites: tuple[str, ...] = ("nih.gov", "nhs.uk", "mayoclinic.org", "wikipedia.org")
+    authority_words: tuple[str, ...] = (
+        " safe ",
+        " dose ",
+        " dosage ",
+        " symptom",
+        " side effect",
+        " interaction",
+        " medicine",
+        " medication",
+        " pregnan",
+        " disease",
+        " treatment",
+        " illness",
+        " vitamin",
+        " legal",
+        " illegal",
+        " law ",
+        " tax ",
+    )
+    grace_seconds: float = 1.5
+    question_starts: tuple[str, ...] = (
+        "what",
+        "who",
+        "when",
+        "where",
+        "why",
+        "how",
+        "which",
+        "is",
+        "are",
+        "was",
+        "were",
+        "does",
+        "do",
+        "did",
+        "should",
+        "can",
+        "will",
+    )
+    question_words: tuple[str, ...] = (
+        "recommend",
+        "best",
+        "compare",
+        "versus",
+        " vs ",
+        "price",
+        "cost of",
+        "buy",
+        "review",
+        "latest",
+        "news",
+        "difference between",
+        "tell me about",
+        "look up",
+        "search for",
+        "find me",
+        "alternatives",
+        "competitors",
+    )
+    chat_patterns: tuple[str, ...] = (
+        r"\b(my|mine|i told you|remember that|forget that|you remember)\b",
+        r"^(hi|hello|hey|thanks|thank you|ok|okay|good (morning|evening|night))\b",
+        r"\b(how are you|what'?s up|who are you|what is your name|what are you)\b",
+        r"\byou (just )?(said|explained|explain|told|mentioned|wrote)\b",
+        r"\d\s*(\+|-|\*|/|x|times|plus|minus|divided by)\s*\d",
+        r"^(open|launch|play|pause|skip|mute|unmute|set the volume)\b",
+        r"^(do|are) you\b",
+        r"^(can|could|would|will) you (open|play|pause|skip|write|help|remember|forget)\b",
+    )
+    skip_hosts: tuple[str, ...] = (
+        "youtube.com",
+        "youtu.be",
+        "facebook.com",
+        "instagram.com",
+        "tiktok.com",
+        "x.com",
+        "twitter.com",
+        "pinterest.com",
+        "linkedin.com",
+        "reddit.com",
+    )
+
+    def __post_init__(self) -> None:
+        """Check the limits.
+
+        Raises:
+            ConfigError: If a limit is not positive.
+        """
+        limits = (
+            self.max_query_chars,
+            self.keyword_words,
+            self.pages,
+            self.listed,
+            self.max_per_host,
+            self.page_chars,
+            self.total_chars,
+            self.links,
+            self.code_blocks,
+            self.code_chars,
+            self.grace_seconds,
+        )
+        if min(limits) <= 0:
+            raise ConfigError("research limits must be positive")
+
+
+@dataclass(frozen=True)
+class MemorySettings:
+    """Settings for what Tzara remembers between conversations.
+
+    Memory is kept in one file in the data directory, readable only by you. Turn it off and
+    Tzara forgets everything when it stops, as before.
+
+    Attributes:
+        enabled: Whether anything is kept on disk.
+        max_fact_chars: Longest fact accepted. A fact is one short sentence.
+        max_facts: Most facts kept; past that, one has to be forgotten first.
+        inject_facts: How many facts, the most recently confirmed, are told to the model. They
+            do not depend on what is being said: a prompt that changes from message to message
+            makes Ollama redo its work on the whole prompt, which costs seconds. Older facts are
+            found with the ``recall`` tool.
+        inject_chars: Most text of facts put in the prompt, since the context window is small.
+        recall_results: Most results of a search through memory.
+        snippet_chars: Longest excerpt of a past message shown in search results.
+        restore_chars: Most text of the last conversation put back when Tzara starts.
+    """
+
+    enabled: bool = True
+    max_fact_chars: int = 300
+    max_facts: int = 200
+    inject_facts: int = 10
+    inject_chars: int = 900
+    recall_results: int = 5
+    snippet_chars: int = 240
+    restore_chars: int = 24_000
+
+    def __post_init__(self) -> None:
+        """Check the limits.
+
+        Raises:
+            ConfigError: If a limit is not positive.
+        """
+        limits = (
+            self.max_fact_chars,
+            self.max_facts,
+            self.inject_facts,
+            self.inject_chars,
+            self.recall_results,
+            self.snippet_chars,
+            self.restore_chars,
+        )
+        if min(limits) <= 0:
+            raise ConfigError("memory limits must be positive")
+
+
+@dataclass(frozen=True)
+class CLISettings:
     """Text shown by the command-line interface.
 
     Strings that are printed through ``rich`` may contain console markup.
@@ -298,10 +531,17 @@ class CLISettings:  # pylint: disable=too-many-instance-attributes
     load_failed: str = "Could not load the model"
     new_conversation: str = "Started a new conversation."
     log_hint: str = "Details are in the log: {path}"
+    memory_off: str = "Memory is turned off (TZARA_MEMORY=false)."
+    memory_empty: str = "Tzara has not remembered anything about you yet."
+    memory_header: str = "What Tzara remembers about you ({count} conversations stored):"
+    memory_erased: str = "Forgot everything: all facts and all stored conversations."
+    erase_usage: str = (
+        "This forgets every fact and every stored conversation. To go ahead: /erase-memory yes"
+    )
 
 
 @dataclass(frozen=True)
-class TzaraConfig:  # pylint: disable=too-many-instance-attributes
+class TzaraConfig:
     """Top-level configuration.
 
     Attributes:
@@ -314,8 +554,8 @@ class TzaraConfig:  # pylint: disable=too-many-instance-attributes
         installer: Where ``tzara setup`` fetches and installs things.
         web: Web search and page reading.
         system: Tools that open things and control media on the Mac.
-        harness_providers: Providers the DeepAgents harness profile is
-            registered for.
+        research: The ``research`` tool, which reads pages to answer bigger questions.
+        memory: What Tzara remembers between conversations.
         warmup_message: Throwaway message used to load the model and prime
             Ollama's prompt cache before the user's first message.
     """
@@ -329,7 +569,8 @@ class TzaraConfig:  # pylint: disable=too-many-instance-attributes
     installer: InstallerSettings = field(default_factory=InstallerSettings)
     web: WebSettings = field(default_factory=WebSettings)
     system: SystemSettings = field(default_factory=SystemSettings)
-    harness_providers: tuple[str, ...] = ("ollama", "anthropic", "openai", "google_genai")
+    research: ResearchSettings = field(default_factory=ResearchSettings)
+    memory: MemorySettings = field(default_factory=MemorySettings)
     warmup_message: str = "hi"
 
     @classmethod
@@ -340,8 +581,7 @@ class TzaraConfig:  # pylint: disable=too-many-instance-attributes
         ``TZARA_OLLAMA_KEEP_ALIVE``, ``TZARA_OLLAMA_REASONING``,
         ``TZARA_OLLAMA_RESERVED_TOKENS``, ``TZARA_LOG_LEVEL``, ``TZARA_LOG_FILE``,
         ``TZARA_SERVER_PORT``, ``TZARA_DATA_DIR``, ``TZARA_RELEASE_URL``,
-        ``TZARA_APP_DIR``, ``TZARA_WEB_SEARCH``, ``TZARA_WEB_SEARCH_PROVIDER``
-        and ``TZARA_SYSTEM_TOOLS``.
+        ``TZARA_APP_DIR``, ``TZARA_WEB_SEARCH``, ``TZARA_SYSTEM_TOOLS`` and ``TZARA_MEMORY``.
 
         Args:
             env: Variables to read. Defaults to ``os.environ``.
@@ -383,11 +623,14 @@ class TzaraConfig:  # pylint: disable=too-many-instance-attributes
             web=replace(
                 defaults.web,
                 enabled=reader.boolean("WEB_SEARCH", defaults.web.enabled),
-                provider=reader.text("WEB_SEARCH_PROVIDER", defaults.web.provider).lower(),
             ),
             system=replace(
                 defaults.system,
                 enabled=reader.boolean("SYSTEM_TOOLS", defaults.system.enabled),
+            ),
+            memory=replace(
+                defaults.memory,
+                enabled=reader.boolean("MEMORY", defaults.memory.enabled),
             ),
         )
 

@@ -11,12 +11,20 @@ class FakeController:
         self.current_model = "ollama:qwen3:8b"
         self.switched_to: list[str] = []
         self.new_conversations = 0
+        self.shown_memory = 0
+        self.erased_memory = 0
 
     def switch_model(self, model: str) -> None:
         self.switched_to.append(model)
 
     def new_conversation(self) -> None:
         self.new_conversations += 1
+
+    def show_memory(self) -> None:
+        self.shown_memory += 1
+
+    def erase_memory(self) -> None:
+        self.erased_memory += 1
 
 
 @pytest.fixture(name="console")
@@ -117,6 +125,31 @@ class TestBuiltinCommands:
         registry, controller, _ = setup
         registry.execute("/new")
         assert controller.new_conversations == 1
+
+    def test_memory_shows_what_is_remembered(self, setup):
+        registry, controller, _ = setup
+        registry.execute("/memory")
+        assert controller.shown_memory == 1
+
+    @pytest.mark.parametrize(
+        "line", ["/erase-memory", "/erase-memory no", "/erase-memory yes please"]
+    )
+    def test_erase_memory_needs_an_explicit_yes(self, setup, line):
+        registry, controller, console = setup
+        registry.execute(line)
+        assert controller.erased_memory == 0
+        assert "/erase-memory yes" in console.output
+
+    @pytest.mark.parametrize("line", ["/erase-memory yes", "/erase-memory YES"])
+    def test_erase_memory_with_yes_forgets_everything(self, setup, line):
+        registry, controller, _ = setup
+        registry.execute(line)
+        assert controller.erased_memory == 1
+
+    def test_the_memory_commands_are_in_the_help(self, setup):
+        registry, _, console = setup
+        registry.execute("/help")
+        assert "/memory" in console.output and "/erase-memory" in console.output
 
     def test_exit_ends_the_session(self, setup):
         registry, _, _ = setup

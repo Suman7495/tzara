@@ -116,6 +116,17 @@ struct ChatClientStreamTests {
         #expect(events == [.token("Hello"), .token(" there"), .done(firstTokenSeconds: 0.3, characters: 11)])
     }
 
+    @Test func statusEventsComeThroughBetweenTheTokens() async throws {
+        let harness = try makeHarness { _ in
+            .init(body: sse([
+                ("status", #"{"text": "Reading bbc.com\u2026"}"#), ("token", #"{"text": "Hi"}"#),
+                ("done", #"{"first_token_seconds": 0.3, "characters": 2}"#),
+            ]))
+        }
+        let events = try await collect(harness.client.stream("hi"))
+        #expect(events == [.status("Reading bbc.com\u{2026}"), .token("Hi"), .done(firstTokenSeconds: 0.3, characters: 2)])
+    }
+
     @Test func sendsTheMessageWithTheTokenToTheChatEndpoint() async throws {
         final class Seen: @unchecked Sendable { var request: URLRequest?; var body = Data() }
         let seen = Seen()
@@ -350,6 +361,52 @@ struct ChatClientSettingsTests {
         #expect(try await harness.client.history().isEmpty)
     }
 
+    @Test func theMemoryOverviewIsDecoded() async throws {
+        let seen = Seen()
+        let json = #"{"enabled": true, "facts": [{"id": 3, "text": "The user likes tea.", "created": 1700000000.5}], "conversations": 2}"#
+        let harness = try harness(seen: seen, reply: .init(body: Data(json.utf8)))
+        let overview = try await harness.client.memory()
+
+        #expect(seen.path == "/v1/memory" && seen.method == "GET")
+        #expect(overview == MemoryOverview(enabled: true, facts: [MemoryFact(id: 3, text: "The user likes tea.", created: 1700000000.5)], conversations: 2))
+    }
+
+    @Test func forgettingAFactDeletesItByNumber() async throws {
+        let seen = Seen()
+        let harness = try harness(seen: seen, reply: .init(status: 204))
+        try await harness.client.forgetFact(7)
+
+        #expect(seen.path == "/v1/memory/facts/7" && seen.method == "DELETE")
+        #expect(seen.auth == "Bearer test-token")
+    }
+
+    @Test func erasingMemoryDeletesEverything() async throws {
+        let seen = Seen()
+        let harness = try harness(seen: seen, reply: .init(status: 204))
+        try await harness.client.eraseMemory()
+
+        #expect(seen.path == "/v1/memory" && seen.method == "DELETE")
+    }
+
+    @Test func erasingWhileAReplyIsBeingWrittenIsReportedAsBusy() async throws {
+        let harness = try makeHarness { _ in reply(409, detail: "the agent is busy") }
+        await #expect(throws: ChatClientError.busy) { try await harness.client.eraseMemory() }
+    }
+
+    @Test func wakingTheModelPostsToTheWakeEndpoint() async throws {
+        let seen = Seen()
+        let harness = try harness(seen: seen, reply: .init(status: 202, body: Data(#"{"waking": true}"#.utf8)))
+        await harness.client.wake()
+
+        #expect(seen.path == "/v1/wake" && seen.method == "POST")
+        #expect(seen.auth == "Bearer test-token")
+    }
+
+    @Test func wakingNeverFailsEvenWithNoServer() async throws {
+        let harness = try makeHarness(running: false) { _ in .init() }
+        await harness.client.wake()  // nothing to assert: it must simply return
+    }
+
     @Test func settingTheModelPutsItAndReturnsTheOneNowInUse() async throws {
         let seen = Seen()
         let harness = try harness(seen: seen, reply: .init(body: Data(#"{"model": "ollama:mistral"}"#.utf8)))
@@ -398,12 +455,15 @@ struct ChatClientSettingsTests {
         let harness = try makeHarness { _ in .init(body: Data("not json".utf8)) }
         await #expect(throws: ChatClientError.unexpectedStatus(200)) { try await harness.client.models() }
         await #expect(throws: ChatClientError.unexpectedStatus(200)) { try await harness.client.history() }
+        await #expect(throws: ChatClientError.unexpectedStatus(200)) { try await harness.client.memory() }
     }
 
     @Test func everyCallNeedsARunningServer() async throws {
         let harness = try makeHarness(running: false) { _ in .init() }
         await #expect(throws: ChatClientError.serverNotRunning) { try await harness.client.models() }
         await #expect(throws: ChatClientError.serverNotRunning) { try await harness.client.history() }
+        await #expect(throws: ChatClientError.serverNotRunning) { try await harness.client.memory() }
+        await #expect(throws: ChatClientError.serverNotRunning) { try await harness.client.eraseMemory() }
         await #expect(throws: ChatClientError.serverNotRunning) { try await harness.client.setModel("a:b") }
         await #expect(throws: ChatClientError.serverNotRunning) { try await harness.client.rename("x") }
     }

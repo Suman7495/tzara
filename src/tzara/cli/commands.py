@@ -10,6 +10,7 @@ from rich.console import Console
 from rich.table import Table
 
 from tzara.agent.models import ModelCatalog
+from tzara.config import CLISettings
 
 
 class ExitRequested(Exception):
@@ -28,6 +29,12 @@ class SessionController(Protocol):
 
     def new_conversation(self) -> None:
         """Forget the conversation so far and start a new one."""
+
+    def show_memory(self) -> None:
+        """Print what Tzara remembers about the user."""
+
+    def erase_memory(self) -> None:
+        """Forget every fact and every stored conversation."""
 
 
 @dataclass(frozen=True)
@@ -104,7 +111,11 @@ class BuiltinCommands:
     """Tzara's built-in slash commands."""
 
     def __init__(
-        self, registry: CommandRegistry, console: Console, controller: SessionController
+        self,
+        registry: CommandRegistry,
+        console: Console,
+        controller: SessionController,
+        config: CLISettings | None = None,
     ) -> None:
         """Register the built-in commands.
 
@@ -112,16 +123,22 @@ class BuiltinCommands:
             registry: Registry to add the commands to.
             console: Console the commands print to.
             controller: Provides the current model and changes the session.
+            config: Text the commands print. Defaults to :class:`CLISettings`.
         """
         self._registry = registry
         self._console = console
         self._controller = controller
+        self._config = config or CLISettings()
 
         registry.register("/help", "Show available commands.", self.help)
         registry.register("/list-models", "List available models.", self.list_models)
         registry.register("/current-model", "Show the current model.", self.current_model)
         registry.register("/set-model", "Switch model: /set-model <model>", self.set_model)
         registry.register("/new", "Forget the conversation and start a new one.", self.new)
+        registry.register("/memory", "Show what Tzara remembers about you.", self.memory)
+        registry.register(
+            "/erase-memory", "Forget everything: /erase-memory yes", self.erase_memory
+        )
         registry.register("/exit", "Exit Tzara.", self.exit)
 
     def help(self, _arguments: Sequence[str]) -> None:
@@ -159,6 +176,17 @@ class BuiltinCommands:
     def new(self, _arguments: Sequence[str]) -> None:
         """Start a new conversation."""
         self._controller.new_conversation()
+
+    def memory(self, _arguments: Sequence[str]) -> None:
+        """Show what is remembered about the user."""
+        self._controller.show_memory()
+
+    def erase_memory(self, arguments: Sequence[str]) -> None:
+        """Forget everything, but only when asked in so many words."""
+        if [argument.lower() for argument in arguments] != ["yes"]:
+            self._console.print(self._config.erase_usage, markup=False)
+            return
+        self._controller.erase_memory()
 
     def exit(self, _arguments: Sequence[str]) -> None:
         """End the chat session."""
