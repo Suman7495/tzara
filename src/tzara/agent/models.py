@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from typing import Any, ClassVar
 
 from langchain.chat_models import init_chat_model
 from langchain_core.language_models import BaseChatModel
+from langchain_core.outputs import ChatGenerationChunk
+from langchain_ollama import ChatOllama
 
 from tzara.config import OllamaSettings
 
@@ -57,12 +60,31 @@ class ModelCatalog:
         return provider if separator else ""
 
 
+class NumberedToolCallsChatOllama(ChatOllama):
+    """``ChatOllama`` that numbers the tool calls it streams.
+
+    Ollama sends each tool call whole, in a chunk of its own, with no ``index``. LangChain's
+    streaming protocol merges chunks that share an index, and a missing index counts as the
+    same one every time. So when a model asked for several tools at once, the calls were
+    glued into one with unreadable arguments (``{"a": 1}{"a": 2}``), nothing ran, and the reply
+    came back empty. Numbering them keeps them apart.
+    """
+
+    def _stream(self, *args: Any, **kwargs: Any) -> Iterator[ChatGenerationChunk]:
+        """Stream the reply, giving each tool call in it its own index."""
+        index = 0
+        for chunk in super()._stream(*args, **kwargs):
+            for call in getattr(chunk.message, "tool_call_chunks", None) or []:
+                call["index"] = index
+                index += 1
+            yield chunk
+
+
 class ModelFactory:
     """Builds chat model instances from ``provider:model-name`` specs.
 
-    A model *instance* is passed to DeepAgents rather than the spec string.
-    DeepAgents ignores harness profiles for specs with more than one colon, such
-    as ``ollama:llama3.1:8b``, but resolves them by provider for instances.
+    The agent is given a model *instance*, which carries the context size (``profile``) that
+    decides when old turns are summarized.
     """
 
     def __init__(self, ollama: OllamaSettings) -> None:
@@ -73,29 +95,35 @@ class ModelFactory:
         """
         self._ollama = ollama
 
-    def create(self, spec: str) -> BaseChatModel:
+    def create(self, spec: str, temperature: float | None = None) -> BaseChatModel:
         """Build a chat model.
 
         Args:
             spec: Model spec as ``provider:model-name``.
+            temperature: How much the model varies its answers; 0 gives the same answer each
+                time. ``None`` leaves the provider's own default.
 
         Returns:
             A new chat model with its own HTTP client.
         """
-        kwargs: dict[str, Any] = {}
         if ModelCatalog.provider_of(spec) == ModelCatalog.OLLAMA:
-            kwargs = {
-                "num_ctx": self._ollama.num_ctx,
-                "keep_alive": self._ollama.keep_alive,
+            return NumberedToolCallsChatOllama(
+                model=spec.split(":", 1)[1],
+                num_ctx=self._ollama.num_ctx,
+                keep_alive=self._ollama.keep_alive,
                 # Ignored by models without thinking support.
-                "reasoning": self._ollama.reasoning,
-                # Ollama models report no context size, so DeepAgents would only
-                # summarize at 170,000 tokens: far past num_ctx, where Ollama
-                # silently truncates the prompt. A profile makes it summarize
-                # when history nears the budget instead.
-                "profile": {"max_input_tokens": self._ollama.history_tokens},
-            }
-        return init_chat_model(spec, **kwargs)
+                reasoning=self._ollama.reasoning,
+                # Ollama models report no context size, so nothing would summarize old turns
+                # before num_ctx, where Ollama silently truncates the prompt. A profile makes
+                # the summarizer act when history nears the budget instead.
+                profile={"max_input_tokens": self._ollama.history_tokens},
+                temperature=temperature,
+            )
+        return (
+            init_chat_model(spec)
+            if temperature is None
+            else init_chat_model(spec, temperature=temperature)
+        )
 
     @staticmethod
     def close_connection(model: BaseChatModel) -> None:

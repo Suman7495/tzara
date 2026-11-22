@@ -117,7 +117,7 @@ class Installer:
 
     OLLAMA_PROVIDER = "ollama"
 
-    def __init__(  # pylint: disable=too-many-arguments,too-many-positional-arguments
+    def __init__(
         self,
         config: TzaraConfig,
         reporter: Reporter,

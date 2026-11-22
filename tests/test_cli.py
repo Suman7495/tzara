@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from helpers import FakeAgent, ScriptedConsole
+from helpers import FakeAgent, ScriptedConsole, personal_memory
 from tzara.agent.memory import ConversationMemory
 from tzara.cli.run import TzaraCLI
 from tzara.config import TzaraConfig
@@ -315,3 +315,53 @@ class TestSigint:
         thread.start()
         thread.join()
         assert results == [True]
+
+
+class TestMemoryCommands:
+    @staticmethod
+    def personal(*facts):
+
+        memory = personal_memory()
+        assert memory is not None
+        for fact in facts:
+            memory.facts.add(fact)
+        return memory
+
+    def test_memory_lists_the_facts(self):
+        personal = self.personal("The user likes tea.", "The user owns a cat.")
+        personal.log.append(personal.log.start(), "user", "hello")
+        cli, console, _ = make_cli(["/memory"], personal=personal)
+        cli.run()
+        assert "The user likes tea." in console.output and "The user owns a cat." in console.output
+        assert "1 conversations stored" in console.output
+
+    def test_memory_says_when_it_is_empty(self):
+        cli, console, _ = make_cli(["/memory"], personal=self.personal())
+        cli.run()
+        assert TzaraConfig().cli.memory_empty in console.output
+
+    def test_memory_says_when_it_is_turned_off(self):
+        cli, console, _ = make_cli(["/memory"])
+        cli.run()
+        assert TzaraConfig().cli.memory_off in console.output
+
+    def test_erase_memory_forgets_facts_conversations_and_this_conversation(self):
+        personal = self.personal("The user likes tea.")
+        conversation = ConversationMemory(log=personal.log)
+        conversation.record("user", "hello")
+        cli, console, _ = make_cli(["/erase-memory yes"], personal=personal, memory=conversation)
+        cli.run()
+        assert personal.facts.count() == 0 and personal.log.count() == 0
+        assert conversation.conversation_id is None
+        assert TzaraConfig().cli.memory_erased in console.output
+
+    def test_erase_memory_without_a_memory_still_starts_afresh(self):
+        cli, console, _ = make_cli(["/erase-memory yes"])
+        cli.run()
+        assert TzaraConfig().cli.memory_erased in console.output
+
+    def test_agents_are_given_the_memory(self):
+        personal = self.personal()
+        cli, _, agents = make_cli([], personal=personal)
+        cli.run()
+        assert agents.created[0].personal is personal

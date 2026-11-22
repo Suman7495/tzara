@@ -24,7 +24,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Only an installed copy updates itself: one run from the build folder is a developer's.
         let installed = Bundle.main.bundlePath.contains("/Applications/")
         if let version, installed, !CommandLine.arguments.contains("--snapshot") {
-            autoUpdater = AutoUpdater(currentVersion: version, isBusy: { chatBox.isOpen })
+            autoUpdater = AutoUpdater(currentVersion: version, isBusy: { chatBox.isOpen || chatBox.isWorking })
             autoUpdater?.start()
         }
 
@@ -35,10 +35,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let settings = arguments.contains("--settings")
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { chatBox.show(settings: settings) }
         }
-        // `--snapshot FILE` draws the box into a PNG after it has loaded, then quits.
+        // `--press-paste` sends Command+V to the box a moment after it opens (for checking paste).
+        if arguments.contains("--press-paste") {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { chatBox.pressPaste() }
+        }
+        // `--snapshot FILE` draws the box into a PNG after it has loaded, then quits. Add
+        // `--snapshot-after SECONDS` to wait longer, for things that arrive late.
         if let flag = arguments.firstIndex(of: "--snapshot"), flag + 1 < arguments.count {
             let path = arguments[flag + 1]
-            DispatchQueue.main.asyncAfter(deadline: .now() + 3.5) {
+            var wait = 3.5
+            if let after = arguments.firstIndex(of: "--snapshot-after"), after + 1 < arguments.count,
+                let seconds = Double(arguments[after + 1])
+            {
+                wait = seconds
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + wait) {
                 chatBox.snapshot(to: path)
                 NSApplication.shared.terminate(nil)
             }

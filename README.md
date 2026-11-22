@@ -4,20 +4,22 @@
 
 # Tzara: Your Cute Personal AI Agent
 
-Tzara is an open-source, **local-first personal AI agent** built on **LangChain's DeepAgents framework** and designed for developers who want to learn and experiment with AI agents in Python.
+Tzara is an open-source, **local-first personal AI agent** built on **LangChain's agent framework (LangGraph)** and designed for developers who want to learn and experiment with AI agents in Python.
 
 It's fully local, supports multiple models, can search the web, open apps and sites and control your music, and is extensible with custom tools.
 
-**No cloud. Complete data privacy:** the model and your chats stay on your machine. The one exception is web search, which sends the search query out; turn it off with `TZARA_WEB_SEARCH=false`.
+**No cloud. Complete data privacy:** the model, your chats and what Tzara remembers about you stay on your machine, in one file only you can read (`memory.db` in Tzara's data folder). The exceptions are web search, which sends the search query out (`TZARA_WEB_SEARCH=false` turns it off). Don't want anything kept? `TZARA_MEMORY=false`.
 
 
 ## Features
 
-- [x] **Lightweight & low footprint** — Small Python core with fast startup and low memory usage, runs comfortably on a personal laptop
+- [x] **Lightweight & low footprint** — Small Python core with fast startup and low memory usage, runs comfortably on a personal laptop.
 - [x] **Multi-Model Support** — Switch between Ollama, Anthropic, OpenAI, and Google models at runtime
 - [x] **Conversation Memory** — Remembers earlier messages across turns, interrupts and model switches
-- [x] **Web search** — Searches the web and reads pages, then gives a short summary with its source (on by default; DuckDuckGo, or Google through Gemini)
+- [x] **Web search and research** — For a question that asks for facts (how to fix something, health, news, comparisons, what to buy) it searches the web, reads the best pages with a proper article extractor (`trafilatura`; Stack Overflow through its public API), prefers official, reference and documentation sources, copies code from the docs, and answers from that with its sources. It uses no extra model request for this, so it stays quick, and it says what it is doing while it works (on by default; DuckDuckGo)
 - [x] **Open things and control music** — Opens apps (including Terminal), websites, files and folders, and plays, pauses or skips music and sets the volume (macOS; it cannot run commands)
+- [x] **Memory** — Remembers lasting things about you (your name, preferences, how you like answers) and picks the conversation up again after a restart. Ask it to remember or forget something; see and delete everything in Settings
+- [x] **Rich replies** — Formatted answers (bold, lists, headings, code) with clickable links, a **Copy** button under every message, and follow-up buttons you can click to ask the next question
 - [x] **Local API** — Background HTTP server with streaming replies (loopback-only, token-protected)
 - [x] **macOS app** — Tap Control+Option anywhere for a small chat box right at your pointer
 
@@ -56,6 +58,8 @@ Tzara loads the model (a spinner shows, about 12 s when cold), then you chat. Co
 | `/set-model <provider:model>` | Switch model; the conversation carries over. If it can't load, the current one is kept |
 | `/current-model` | Show the active model |
 | `/new` | Forget the conversation and start again |
+| `/memory` | Show what Tzara remembers about you |
+| `/erase-memory yes` | Forget everything: all facts and all stored conversations |
 | `/help`, `/exit` | |
 
 Models are written `provider:model-name`, e.g. `ollama:qwen3:8b`, `anthropic:claude-haiku-4-5`, `openai:gpt-4o`, `google_genai:gemini-3.5-flash`. Any model LangChain can load works.
@@ -65,7 +69,11 @@ Models are written `provider:model-name`, e.g. `ollama:qwen3:8b`, `anthropic:cla
 A menu-bar app that opens a small chat box beside your mouse, over whatever you're doing, including full-screen apps. It talks to the local server below.
 
 - **Tap Control+Option** opens or closes the box. It opens with the input line under your pointer, so you can type straight away; your previous chat is shown. **×** or **Esc** closes it.
-- **Pencil**: new conversation. **Gear → Settings**: pick the model from a dropdown (or type any `provider:model-name`), rename, check the hotkey and server, **Update** to the latest release, **Uninstall Tzara**.
+- **Pencil**: new conversation. **Gear → Settings**: pick the model from a dropdown (or type any `provider:model-name`), rename, see and delete what Tzara remembers, check the hotkey and server, **Update** to the latest release, **Uninstall Tzara**.
+- **Replies are formatted** (bold, lists, headings, code) and links open in your browser. The **copy** icon in the top-right corner of a message copies its text. While Tzara works it says what it is doing ("Searching the web for …", "Reading 5 pages…") instead of only spinning. Closing the box (Esc or the − button) while a reply is being written lets it finish in the background; the menu-bar icon shows when it is ready.
+- **Links.** Any link in a reply is one Tzara really got from a search or a page it read that turn, or one you wrote yourself. Anything else it writes is taken out before you see it, so it cannot make a product page up.
+- **Opening the box wakes the model.** If Tzara has been idle for a couple of minutes, opening the chat box starts loading the model, so it is ready by the time you have typed.
+- **Memory.** Say "remember that I prefer short answers" or "forget where I live". Tzara keeps lasting facts about you and tells the model the relevant ones before each answer; it also restores your last conversation when it restarts and can search older ones ("what did we say about the Alps trip?"). **Settings → Memory** lists every fact with a trash icon, and **Erase all memory…** forgets everything. Only what *you* say can be remembered: after Tzara has read a web page in a turn, it refuses to remember or forget anything, so a page cannot plant facts. A small model can occasionally say it remembered or forgot something without doing it, so check Settings.
 - **Double-click the name** at the top to rename it. The assistant uses the new name when it describes itself, and remembers it.
 - **Update automatically** (on by default) and **Update** look up the newest release on GitHub and install it if it is newer. Progress and errors go to `~/Library/Logs/tzara/update.log`.
 - The menu-bar icon opens the chat, shows whether the hotkey is active, and has **Quit Tzara**.
@@ -93,6 +101,10 @@ It listens only on `127.0.0.1`. The server keeps `token` and `server.json` (`{"h
 | `GET /v1/health` | `{"status": "ok"}`; no token |
 | `GET /v1/status` | `{"state", "model", "name", "busy", "error"}` |
 | `GET /v1/models` | `{"providers": [{"name", "models": [{"id", "description"}]}]}` |
+| `POST /v1/wake` | Get an idle model ready (`202` at once, `{"waking": true\|false}`); the app calls it when the box opens |
+| `GET /v1/memory` | `{"enabled", "facts": [{"id", "text", "created"}], "conversations"}`: what Tzara remembers about you |
+| `DELETE /v1/memory/facts/{id}` | Forget one fact (`204`, or `404`) |
+| `DELETE /v1/memory` | Forget everything: all facts, all stored conversations, and the current one (`204`; `409` while a reply is being written) |
 | `GET /v1/conversation` | `{"messages": [{"role": "user"\|"assistant", "text"}]}` |
 | `POST /v1/chat` `{"message"}` | Streams the reply as server-sent events |
 | `POST /v1/interrupt` | Cancel the reply being written (`204`) |
@@ -100,13 +112,13 @@ It listens only on `127.0.0.1`. The server keeps `token` and `server.json` (`{"h
 | `PUT /v1/model` `{"model"}` | Switch model (about 15 s) |
 | `PUT /v1/name` `{"name"}` | Rename the assistant, 1–40 characters on one line (about 10 s) |
 
-**Chat events:** `event: token` with `{"text"}` (concatenate them), then `done` with `{"first_token_seconds", "characters"}`, or `error` with `{"message"}`. After 10 s of silence the server sends a `: keep-alive` comment line; ignore it. Closing the connection cancels the reply.
+**Chat events:** `event: token` with `{"text"}` (concatenate them), `event: status` with `{"text"}` (what the agent is doing now, such as "Reading bbc.com…"; show it while waiting, it is not part of the reply), `event: tool` with `{"name", "state"}` (`started`, `completed` or `failed`, for a client that tracks which tool is running), then `done` with `{"first_token_seconds", "characters"}`, or `error` with `{"message"}`. After 10 s of silence the server sends a `: keep-alive` comment line; ignore it. Closing the connection cancels the reply.
 
 **Status codes:** `409` another reply is being written, `503` the model isn't ready, `413`/`422` rejected input, `502` a model or name change failed (the old one stays), `401` bad token.
 
 **Security:** a local port is reachable by any program and any web page, so requests must carry the token, must not carry a browser `Origin` header (browser clients are refused), and must be addressed to a loopback `Host`.
 
-The conversation lives in the server's memory, until you start a new one or stop the server. It survives interrupts and model switches, and old turns are summarized rather than cut off as it nears the context window.
+The conversation survives interrupts and model switches, and old turns are summarized rather than cut off as it nears the context window. What was said is also written to `memory.db`, so after a restart the server picks the conversation up where it left off; `POST /v1/conversation/new` ends it.
 
 ## Configuration
 
@@ -120,8 +132,8 @@ Defaults live in [`TzaraConfig`](src/tzara/config.py). Override with environment
 | `TZARA_OLLAMA_REASONING` | `false` | Let thinking models such as Qwen3 think first; slower |
 | `TZARA_OLLAMA_RESERVED_TOKENS` | `4096` | Part of the window kept for the prompt and reply; the rest is the history budget |
 | `TZARA_WEB_SEARCH` | `true` | Let Tzara search the web and read pages. This is the one feature that sends something off your machine (the search query, and page requests); set `false` to keep everything local |
-| `TZARA_WEB_SEARCH_PROVIDER` | `duckduckgo` | `duckduckgo` needs nothing. `gemini` searches Google through the Gemini API and needs `GOOGLE_API_KEY` |
 | `TZARA_SYSTEM_TOOLS` | `true` | Let Tzara open apps, sites, files and folders and control music (macOS only). It never runs commands or opens scripts and installers; set `false` to turn it off |
+| `TZARA_MEMORY` | `true` | Keep facts about you and your conversations on disk, in `memory.db` in the data folder (readable only by you). Set `false` and Tzara forgets everything when it stops |
 | `TZARA_LOG_LEVEL` | `INFO` | `DEBUG`, `INFO`, `WARNING`, `ERROR` or `CRITICAL` |
 | `TZARA_LOG_FILE` | platform default | `~/Library/Logs/tzara/tzara.log`, `~/.local/state/tzara/tzara.log`, or `%LOCALAPPDATA%\tzara\Logs\tzara.log` |
 | `TZARA_SERVER_PORT` | `8927` | Server port, on `127.0.0.1` |
@@ -156,7 +168,7 @@ class Weather(BaseTool):
 ```
 Register it in `Tzara.__init__` (`src/tzara/agent/agent.py`):
 ```python
-self._tools = [Calculator(), *WebTools.create(self._config), Weather()]
+self._tools = [*WebTools.create(self._config), Weather()]
 ```
 Tzara decides when to use it. Add a test in `tests/` and run `make check`.
 
@@ -169,11 +181,14 @@ git clone https://github.com/Suman7495/tzara.git && cd tzara
 make install                      # exact tested versions, plus dev tools
 tzara setup --no-service --no-app # just Ollama and the model
 make app                          # build the app yourself (needs the Command Line Tools)
+make dev                          # try your changes: server + app from this checkout
 ```
+
+**Trying your changes:** `make dev` builds the app, starts a server on its own port (18927) with its own data folder (`/tmp/tzara-dev`), and opens the app against it. The installed server, token and name are untouched. It quits the installed app while it runs, because both would answer Control+Option, and reopens it when you quit the dev app (menu-bar icon) or press Ctrl+C. Needs the project's environment (`conda activate tzara && make install`, once). `DEV_KEEP_INSTALLED=1 make dev` leaves the installed app running.
 
 Skip the login service while developing: it would hold port 8927 (set `TZARA_SERVER_PORT` to run a second server). `tzara setup` fetches the app matching the installed version, so it needs a published release; `make app` builds your own.
 
-**Checks (CI).** Every push to `main` and every pull request runs `make check` (ruff, pylint, mypy, pytest with coverage) on Python 3.11 and 3.12, confirms `requirements.lock` matches `pyproject.toml`, and runs the macOS app's tests. A weekly job tries the newest dependency versions the ranges allow, so upstream breakage shows up early. Run `make check` yourself before pushing.
+**Checks (CI).** Every push to `main` and every pull request runs `make check` (ruff, mypy, pytest) on Python 3.11 and 3.12, confirms `requirements.lock` matches `pyproject.toml`, and runs the macOS app's tests. A weekly job tries the newest dependency versions the ranges allow, so upstream breakage shows up early. Run `make check` yourself before pushing.
 
 **Releasing.** Once: run `app/scripts/create_signing_identity.sh` and save the two GitHub secrets it prints (`TZARA_SIGNING_P12`, `TZARA_SIGNING_PASSWORD`). Every app is then signed with the same certificate, so users keep their Input Monitoring permission across updates; the workflow refuses to publish an unsigned app.
 
@@ -193,11 +208,11 @@ Running `make app` after the signing script signs your local builds with the sam
 tzara/
 ├── src/tzara/
 │   ├── config.py, prompts.py, logs.py, paths.py   # settings, prompts, logging, file locations
-│   ├── agent/            # Deep Agent, conversation memory, model factory
+│   ├── agent/            # the agent, conversation memory, model factory
 │   ├── cli/              # `tzara` command, chat loop, slash commands
 │   ├── server/           # Local HTTP server (FastAPI) and its background manager
 │   ├── installer/        # `tzara setup`: Ollama, login service, app download
-│   └── tools/            # Calculator, web search, Mac tools (open, media), and where custom tools go
+│   └── tools/            # web search and research, memory, Mac tools (open, media), and where custom tools go
 ├── install.sh            # the one-line installer
 ├── scripts/              # helpers the release workflow uses (next version, set version)
 ├── app/                  # macOS app (Swift): hotkey, chat box, settings
@@ -210,14 +225,14 @@ tzara/
 
 ## Learn More
 
-- [LangChain DeepAgents](https://docs.langchain.com/oss/python/deepagents/overview) — Agent framework
+- [LangChain agents](https://docs.langchain.com/oss/python/langchain/agents) — Agent framework
 - [LangGraph](https://python.langchain.com/docs/langgraph/) — Orchestration primitives
 - [LangChain Tools](https://python.langchain.com/docs/modules/tools/) — Tool building
 - [Model Context Protocol](https://modelcontextprotocol.io/) — Integration standard
 
 ## Contributing
 
-Contributions are welcome: new tools, MCP integrations, docs, fixes. Run `make check` (ruff, pylint, mypy, pytest) before opening a pull request; CI runs the same. See [CLAUDE.md](CLAUDE.md) for conventions, the dependency lockfile and git hooks.
+Contributions are welcome: new tools, MCP integrations, docs, fixes. Run `make check` (ruff, mypy, pytest) before opening a pull request; CI runs the same. See [CLAUDE.md](CLAUDE.md) for conventions, the dependency lockfile and git hooks.
 
 ## License
 

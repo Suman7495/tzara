@@ -8,10 +8,20 @@ import threading
 import time
 from collections.abc import Callable, Generator
 from dataclasses import dataclass, replace
+from typing import Any
 
 from tzara.agent import Tzara
+from tzara.agent.events import (
+    AgentEvent,
+    AssistantDelta,
+    Progress,
+    RunCompleted,
+    ToolCompleted,
+    ToolStarted,
+)
 from tzara.agent.memory import ConversationMemory, HistoryMessage
 from tzara.config import TzaraConfig
+from tzara.memory import PersonalMemory
 from tzara.server.files import NameStore
 
 logger = logging.getLogger(__name__)
@@ -42,6 +52,30 @@ class TokenEvent:
 
 
 @dataclass(frozen=True)
+class StatusEvent:
+    """What the agent is doing right now, such as searching the web.
+
+    Attributes:
+        text: A short sentence for the user, such as ``Reading bbc.com…``.
+    """
+
+    text: str
+
+
+@dataclass(frozen=True)
+class ToolEvent:
+    """A tool started or finished, for a client that shows what is running.
+
+    Attributes:
+        name: The tool's name, such as ``web_search``.
+        state: ``started``, ``completed`` or ``failed``.
+    """
+
+    name: str
+    state: str
+
+
+@dataclass(frozen=True)
 class DoneEvent:
     """The reply is complete.
 
@@ -61,7 +95,7 @@ class ErrorEvent:
     message: str
 
 
-TurnEvent = TokenEvent | DoneEvent | ErrorEvent
+TurnEvent = TokenEvent | StatusEvent | ToolEvent | DoneEvent | ErrorEvent
 
 # What a turn reports to: each event, then ``None`` when nothing more will come.
 EventSink = Callable[[TurnEvent | None], None]
@@ -113,21 +147,14 @@ class ChatTurn:
 
     def _run(self) -> None:
         """Stream the reply into the sink, whatever happens."""
-        started = time.monotonic()
-        first_token_after: float | None = None
-        characters = 0
-        replies = self._agent.handle(self._text)
+        replies = self._agent.run(self._text)
         try:
-            for piece in replies:
+            for event in replies:
                 if self.cancelled:
                     break
-                if first_token_after is None:
-                    first_token_after = time.monotonic() - started
-                characters += len(piece)
-                self._sink(TokenEvent(piece))
-            if not self.cancelled:
-                self._sink(DoneEvent(first_token_after, characters))
-        except Exception as error:  # pylint: disable=broad-exception-caught
+                for turn_event in self._translate(event):
+                    self._sink(turn_event)
+        except Exception as error:
             if self.cancelled:
                 logger.info("chat turn cancelled: %s", error)
             else:
@@ -136,13 +163,31 @@ class ChatTurn:
         finally:
             self._finish(replies)
 
-    def _finish(self, replies: Generator[str]) -> None:
+    @staticmethod
+    def _translate(event: AgentEvent) -> list[TurnEvent]:
+        """The server events for one thing the agent did.
+
+        A tool starting gives two: its name and state for a client that tracks tools, and a
+        sentence for one that only wants to show something to the user.
+        """
+        if isinstance(event, AssistantDelta):
+            return [TokenEvent(event.text)]
+        if isinstance(event, ToolStarted):
+            return [ToolEvent(event.name, "started"), StatusEvent(event.description)]
+        if isinstance(event, ToolCompleted):
+            return [ToolEvent(event.name, "failed" if event.failed else "completed")]
+        if isinstance(event, Progress):
+            return [StatusEvent(event.text)]
+        assert isinstance(event, RunCompleted)
+        return [DoneEvent(event.first_token_seconds, event.characters)]
+
+    def _finish(self, replies: Generator[AgentEvent]) -> None:
         """Clean up after the turn and free the service."""
         try:
             replies.close()
             if self.cancelled:
                 self._agent.interrupt()
-        except Exception:  # pylint: disable=broad-exception-caught
+        except Exception:
             logger.exception("could not reset the agent after a cancelled turn")
         finally:
             self._release()
@@ -163,6 +208,8 @@ class ChatService:
         agent_factory: Callable[..., Tzara] = Tzara,
         memory: ConversationMemory | None = None,
         name_store: NameStore | None = None,
+        *,
+        personal: PersonalMemory | None = None,
     ) -> None:
         """Create a service. The agent is built by :meth:`start`.
 
@@ -174,11 +221,15 @@ class ChatService:
                 survives a model switch. Defaults to a new, empty one.
             name_store: Where to remember the assistant's name. ``None`` forgets it
                 when the service stops.
+            personal: What is remembered about the user, handed to every agent. ``None``
+                means nothing is kept.
         """
         self._config = config
         self._agent_factory = agent_factory
         self._memory = memory or ConversationMemory()
         self._name_store = name_store
+        self._personal = personal
+        self._last_active = time.monotonic()
         self._lock = threading.Lock()
         self._state = ServiceState.NEW
         self._error: str | None = None
@@ -221,10 +272,13 @@ class ChatService:
             self._state = ServiceState.LOADING
             try:
                 self._agent = self._agent_factory(
-                    model=self._config.model, config=self._config, memory=self._memory
+                    model=self._config.model,
+                    config=self._config,
+                    memory=self._memory,
+                    personal=self._personal,
                 )
                 self._agent.warm_up()
-            except Exception as error:  # pylint: disable=broad-exception-caught
+            except Exception as error:
                 logger.exception("could not load the model")
                 self._state = ServiceState.FAILED
                 self._error = str(error)
@@ -248,7 +302,7 @@ class ChatService:
         """
         if self._state is not ServiceState.READY or self._agent is None:
             raise ServiceNotReady(f"the model is not ready (state: {self._state.value})")
-        if not self._lock.acquire(blocking=False):  # pylint: disable=consider-using-with
+        if not self._lock.acquire(blocking=False):
             raise ServiceBusy("another reply is still being written")
         try:
             turn = ChatTurn(self._agent, text, sink, release=self._end_turn)
@@ -259,6 +313,38 @@ class ChatService:
             self._lock.release()
             raise
         return turn
+
+    def wake(self) -> bool:
+        """Get the model ready again if it has been idle, without making anyone wait.
+
+        Ollama unloads an idle model, and loading it again (and reading the prompt) takes about
+        twenty seconds. A client calls this when the user opens the chat box, so that the work is
+        done while they type. It does nothing while the server is loading or busy, or if it was
+        in use recently, and it never blocks a reply.
+
+        Returns:
+            Whether the model is being woken.
+        """
+        agent = self._agent
+        idle = time.monotonic() - self._last_active
+        if (
+            agent is None
+            or self._state is not ServiceState.READY
+            or self.busy
+            or idle < self._config.server.wake_after_seconds
+        ):
+            return False
+        self._last_active = time.monotonic()
+        threading.Thread(target=self._warm, args=(agent,), name="tzara-wake", daemon=True).start()
+        return True
+
+    @staticmethod
+    def _warm(agent: Tzara) -> None:
+        """Load the model and read the prompt, ignoring failure: this was only a head start."""
+        try:
+            agent.warm_up()
+        except Exception:
+            logger.warning("could not wake the model", exc_info=True)
 
     def interrupt(self) -> bool:
         """Cancel the reply being written, if any.
@@ -278,7 +364,7 @@ class ChatService:
         Raises:
             ServiceBusy: If the agent is answering or loading.
         """
-        if not self._lock.acquire(blocking=False):  # pylint: disable=consider-using-with
+        if not self._lock.acquire(blocking=False):
             raise ServiceBusy("the agent is busy")
         try:
             self._memory.reset()
@@ -329,6 +415,44 @@ class ChatService:
             self._name_store.save(cleaned)
         logger.info("assistant renamed")
 
+    def memory_overview(self) -> dict[str, Any]:
+        """What is remembered about the user, for them to read.
+
+        Returns:
+            ``enabled``, the ``facts`` (id, text and when each was first remembered) and the
+            number of stored ``conversations``.
+        """
+        if self._personal is None:
+            return {"enabled": False, "facts": [], "conversations": 0}
+        return {
+            "enabled": True,
+            "facts": [
+                {"id": fact.id, "text": fact.text, "created": fact.created_at}
+                for fact in self._personal.facts.all()
+            ],
+            "conversations": self._personal.log.count(),
+        }
+
+    def forget_fact(self, fact_id: int) -> bool:
+        """Delete one remembered fact. Returns whether there was one."""
+        return self._personal is not None and self._personal.facts.remove(fact_id)
+
+    def erase_memory(self) -> None:
+        """Forget everything: every fact and every stored conversation, and this conversation.
+
+        Raises:
+            ServiceBusy: If a reply is being written.
+        """
+        if not self._lock.acquire(blocking=False):
+            raise ServiceBusy("the agent is busy")
+        try:
+            self._memory.reset()
+            if self._personal is not None:
+                self._personal.erase()
+            logger.info("memory erased")
+        finally:
+            self._lock.release()
+
     def history(self) -> list[HistoryMessage]:
         """Return the conversation so far. Empty before the model has loaded."""
         return self._agent.history() if self._agent else []
@@ -340,12 +464,14 @@ class ChatService:
             ServiceBusy: If the agent is answering or loading.
             Exception: Whatever building or loading the new agent raises.
         """
-        if not self._lock.acquire(blocking=False):  # pylint: disable=consider-using-with
+        if not self._lock.acquire(blocking=False):
             raise ServiceBusy("the agent is busy")
         previous_state = self._state
         try:
             self._state = ServiceState.LOADING
-            candidate = self._agent_factory(model=model, config=config, memory=self._memory)
+            candidate = self._agent_factory(
+                model=model, config=config, memory=self._memory, personal=self._personal
+            )
             candidate.warm_up()
         except BaseException:
             self._state = previous_state
@@ -369,5 +495,6 @@ class ChatService:
 
     def _end_turn(self) -> None:
         """Free the service once a turn is over."""
+        self._last_active = time.monotonic()
         self._turn = None
         self._lock.release()

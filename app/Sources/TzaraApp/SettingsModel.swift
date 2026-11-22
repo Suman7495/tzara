@@ -25,6 +25,13 @@ final class SettingsModel: ObservableObject {
         didSet { preferences.autoUpdate = autoUpdate }
     }
 
+    /// What Tzara remembers about the user, or `nil` until the server has said.
+    @Published private(set) var memory: MemoryOverview?
+    /// What went wrong the last time memory was changed.
+    @Published private(set) var memoryMessage: String?
+    /// Called after everything has been forgotten, so the chat can drop what it shows.
+    var onMemoryErased: (() -> Void)?
+
     /// Set once the user has confirmed the uninstall; the app disappears a few seconds later.
     @Published private(set) var isUninstalling = false
 
@@ -77,10 +84,55 @@ final class SettingsModel: ObservableObject {
                 currentModel = status.model
                 serverState = status.state
                 FileLog.shared.info("settings: \(providers.count) providers, model \(status.model)")
+                loadMemory()
             } catch {
                 message = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
             }
         }
+    }
+
+    /// Fetches what Tzara remembers. Called when the settings screen opens.
+    func loadMemory() {
+        Task {
+            do {
+                memory = try await client.memory()
+                memoryMessage = nil
+            } catch {
+                memoryMessage = Self.describe(error)
+            }
+        }
+    }
+
+    /// Makes Tzara forget one thing it knows about the user.
+    func forget(_ fact: MemoryFact) {
+        Task {
+            do {
+                try await client.forgetFact(fact.id)
+                memory = try await client.memory()
+                memoryMessage = nil
+            } catch {
+                memoryMessage = Self.describe(error)
+            }
+        }
+    }
+
+    /// Makes Tzara forget everything it knows and every conversation it has stored. Call this
+    /// only after the user has confirmed.
+    func eraseMemory() {
+        Task {
+            do {
+                try await client.eraseMemory()
+                memory = try await client.memory()
+                memoryMessage = "Forgot everything."
+                onMemoryErased?()
+            } catch {
+                memoryMessage = Self.describe(error)
+            }
+        }
+    }
+
+    private static func describe(_ error: Error) -> String {
+        (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
     }
 
     func choose(_ model: String) {

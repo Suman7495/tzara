@@ -25,7 +25,7 @@ class LaunchAgent:
 
     THROTTLE_SECONDS = 10
 
-    def __init__(  # pylint: disable=too-many-arguments,too-many-positional-arguments
+    def __init__(
         self,
         label: str,
         arguments: Sequence[str],
@@ -56,11 +56,6 @@ class LaunchAgent:
         self._environment = dict(environment or {})
         self._restart_on_crash = restart_on_crash
         self._uid = uid
-
-    @property
-    def plist_path(self) -> Path:
-        """Where the job's definition is written."""
-        return self._plist_path
 
     def render(self) -> dict[str, Any]:
         """Return the job's definition, as it is written to the ``.plist`` file."""
@@ -122,7 +117,7 @@ class ServiceInstaller:
 
     ENVIRONMENT_PREFIX = "TZARA_"
 
-    def __init__(  # pylint: disable=too-many-arguments,too-many-positional-arguments
+    def __init__(
         self,
         settings: InstallerSettings,
         runner: CommandRunner,

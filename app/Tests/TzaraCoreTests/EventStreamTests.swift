@@ -45,6 +45,53 @@ struct LineAssemblerTests {
 
 @Suite("EventStreamParser")
 struct EventStreamParserTests {
+    @Test func readsWhatTheAgentIsDoing() {
+        let stream = """
+            event: status
+            data: {"text": "Searching the web for \u{201C}cats\u{201D}\u{2026}"}
+
+            event: token
+            data: {"text": "Hi"}
+
+
+            """
+        #expect(events(from: stream) == [.status("Searching the web for \u{201C}cats\u{201D}\u{2026}"), .token("Hi")])
+    }
+
+    @Test func readsToolsStartingAndFinishing() {
+        let stream = """
+            event: tool
+            data: {"name": "web_search", "state": "started"}
+
+            event: tool
+            data: {"name": "web_search", "state": "completed"}
+
+            event: tool
+            data: {"name": "open_app", "state": "failed"}
+
+
+            """
+        #expect(
+            events(from: stream) == [
+                .tool(name: "web_search", state: .started), .tool(name: "web_search", state: .completed),
+                .tool(name: "open_app", state: .failed),
+            ])
+    }
+
+    @Test func aToolStateThisAppDoesNotKnowIsSkipped() {
+        let stream = "event: tool\ndata: {\"name\": \"x\", \"state\": \"paused\"}\n\nevent: token\ndata: {\"text\": \"Hi\"}\n\n"
+        #expect(events(from: stream) == [.token("Hi")])
+    }
+
+    @Test func aGarbledToolEventIsReportedNotCrashedOn() {
+        #expect(events(from: "event: tool\ndata: nope\n\n") == [.error("Tzara sent something this app could not read.")])
+    }
+
+    @Test func aGarbledStatusIsReportedNotCrashedOn() {
+        let stream = "event: status\ndata: nope\n\n"
+        #expect(events(from: stream) == [.error("Tzara sent something this app could not read.")])
+    }
+
     @Test func readsTokensInOrder() {
         let stream = """
             event: token

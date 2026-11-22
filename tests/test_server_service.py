@@ -3,7 +3,14 @@ import time
 
 import pytest
 
-from helpers import StreamingFakeAgent
+from helpers import StreamingFakeAgent, personal_memory
+from tzara.agent.events import (
+    AssistantDelta,
+    Progress,
+    RunCompleted,
+    ToolCompleted,
+    ToolStarted,
+)
 from tzara.agent.memory import ConversationMemory, HistoryMessage
 from tzara.config import TzaraConfig
 from tzara.server.files import NameStore
@@ -15,7 +22,9 @@ from tzara.server.service import (
     ServiceBusy,
     ServiceNotReady,
     ServiceState,
+    StatusEvent,
     TokenEvent,
+    ToolEvent,
 )
 
 
@@ -111,6 +120,36 @@ class TestTurns:
         assert done.characters == len("Hello there")
         assert done.first_token_seconds is not None
         assert agents.created[0].messages == ["hi"]
+
+    def test_what_the_agent_is_doing_is_passed_on_as_tool_and_status_events(self):
+        agents = StreamingFakeAgent.isolated()
+        agents.statuses = ["Searching the web for “x”…"]
+        service, _ = make_service(agents)
+        service.start()
+        sink = Collector()
+        service.start_turn("hi", sink)
+
+        events = sink.wait()
+        assert events[:3] == [
+            ToolEvent("fake_tool", "started"),
+            StatusEvent("Searching the web for “x”…"),
+            ToolEvent("fake_tool", "completed"),
+        ]
+        assert isinstance(events[-1], DoneEvent)
+
+    def test_each_kind_of_agent_event_becomes_the_right_server_events(self):
+        translate = ChatTurn._translate
+        assert translate(AssistantDelta("Hi")) == [TokenEvent("Hi")]
+        assert translate(ToolStarted("web_search", "Searching…")) == [
+            ToolEvent("web_search", "started"),
+            StatusEvent("Searching…"),
+        ]
+        assert translate(ToolCompleted("web_search")) == [ToolEvent("web_search", "completed")]
+        assert translate(ToolCompleted("web_search", failed=True)) == [
+            ToolEvent("web_search", "failed")
+        ]
+        assert translate(Progress("Reading 5 pages…")) == [StatusEvent("Reading 5 pages…")]
+        assert translate(RunCompleted(0.5, 12)) == [DoneEvent(0.5, 12)]
 
     def test_the_service_is_busy_only_while_a_turn_runs(self):
         agents = StreamingFakeAgent.isolated()
@@ -526,3 +565,139 @@ class TestHistory:
         service, _ = make_service(agents)
         service.start()
         assert service.history() == agents.conversation
+
+
+class TestMemory:
+    @staticmethod
+    def personal(*facts):
+
+        memory = personal_memory()
+        assert memory is not None
+        for fact in facts:
+            memory.facts.add(fact)
+        return memory
+
+    def test_the_agent_is_given_the_memory(self):
+        personal = self.personal()
+        service, agents = make_service(personal=personal)
+        service.start()
+        assert agents.created[0].personal is personal
+
+    def test_the_overview_lists_the_facts_and_counts_conversations(self):
+        personal = self.personal("The user likes tea.")
+        personal.log.append(personal.log.start(), "user", "hello")
+        service, _ = make_service(personal=personal)
+        overview = service.memory_overview()
+        assert overview["enabled"] is True and overview["conversations"] == 1
+        assert [fact["text"] for fact in overview["facts"]] == ["The user likes tea."]
+        assert isinstance(overview["facts"][0]["id"], int)
+
+    def test_the_overview_says_when_memory_is_off(self):
+        service, _ = make_service()
+        assert service.memory_overview() == {"enabled": False, "facts": [], "conversations": 0}
+
+    def test_one_fact_can_be_forgotten(self):
+        personal = self.personal("one fact", "two fact")
+        service, _ = make_service(personal=personal)
+        target = next(f for f in personal.facts.all() if f.text == "one fact")
+        assert service.forget_fact(target.id) is True
+        assert service.forget_fact(target.id) is False
+        assert [f.text for f in personal.facts.all()] == ["two fact"]
+
+    def test_forgetting_with_memory_off_finds_nothing(self):
+        service, _ = make_service()
+        assert service.forget_fact(1) is False
+
+    def test_erasing_forgets_facts_conversations_and_the_current_conversation(self):
+        personal = self.personal("one fact")
+        conversation = ConversationMemory(log=personal.log)
+        conversation.record("user", "hello")
+        service, _ = make_service(personal=personal, memory=conversation)
+        service.erase_memory()
+        assert personal.facts.count() == 0 and personal.log.count() == 0
+        assert conversation.conversation_id is None
+
+    def test_erasing_with_memory_off_still_starts_a_new_conversation(self):
+        service, _ = make_service()
+        service.erase_memory()
+
+    def test_erasing_is_refused_while_a_reply_is_being_written(self):
+        agents = StreamingFakeAgent.isolated()
+        agents.reply_gate = threading.Event()
+        service, _ = make_service(agents, personal=self.personal("one fact"))
+        service.start()
+        service.start_turn("hi", Collector())
+        wait_until(lambda: service.busy)
+        with pytest.raises(ServiceBusy):
+            service.erase_memory()
+        agents.reply_gate.set()
+
+
+class TestWake:
+    @staticmethod
+    def service(after=0.0):
+        from tzara.config import ServerSettings, TzaraConfig
+
+        agents = StreamingFakeAgent.isolated()
+        config = TzaraConfig(server=ServerSettings(wake_after_seconds=after))
+        return ChatService(config, agent_factory=agents), agents  # type: ignore[arg-type]
+
+    @staticmethod
+    def warm_ups(agents):
+        return sum(agent.events.count("warm_up") for agent in agents.created)
+
+    def test_an_idle_model_is_woken_in_the_background(self):
+        service, agents = self.service()
+        service.start()
+        assert service.wake() is True
+        wait_until(lambda: self.warm_ups(agents) == 2)  # the start, and the wake
+
+    def test_it_waits_until_the_model_has_been_idle_long_enough(self):
+        service, agents = self.service(after=3600)
+        service.start()
+        assert service.wake() is False
+        assert self.warm_ups(agents) == 1
+
+    def test_one_wake_is_enough_until_it_has_been_idle_again(self):
+        service, agents = self.service(after=3600)
+        service.start()
+        service._last_active -= 7200
+        assert service.wake() is True
+        assert service.wake() is False
+        wait_until(lambda: self.warm_ups(agents) == 2)
+
+    def test_a_finished_reply_counts_as_activity(self):
+        service, _ = self.service(after=3600)
+        service.start()
+        service._last_active -= 7200
+        collector = Collector()
+        service.start_turn("hi", collector)
+        collector.wait()
+        wait_until(lambda: not service.busy)
+        assert service.wake() is False
+
+    def test_it_does_nothing_before_the_model_is_loaded(self):
+        service, _ = self.service()
+        assert service.wake() is False
+
+    def test_it_does_nothing_while_a_reply_is_being_written(self):
+        service, agents = self.service()
+        agents.reply_gate = threading.Event()
+        service.start()
+        service.start_turn("hi", Collector())
+        wait_until(lambda: service.busy)
+        assert service.wake() is False
+        agents.reply_gate.set()
+
+    def test_a_wake_that_fails_is_logged_not_raised(self, caplog):
+        service, agents = self.service()
+        service.start()
+        agents.warm_up_error = ConnectionError("ollama is down")
+        assert service.wake() is True
+        wait_until(lambda: "could not wake the model" in caplog.text)
+
+    def test_the_waiting_time_must_not_be_negative(self):
+        from tzara.config import ConfigError, ServerSettings
+
+        with pytest.raises(ConfigError, match="wake_after_seconds"):
+            ServerSettings(wake_after_seconds=-1)

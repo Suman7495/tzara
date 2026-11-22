@@ -3,16 +3,26 @@
 from __future__ import annotations
 
 import io
+import json
 import threading
 import time
 from collections.abc import Iterator, Sequence
 from typing import Any, ClassVar
 
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
-from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage
+from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage, ToolCallChunk
 from langchain_core.outputs import ChatGeneration, ChatGenerationChunk, ChatResult
-from pydantic import Field
+from langchain_core.tools import BaseTool
+from pydantic import BaseModel, Field
 from rich.console import Console
+
+from tzara.agent.events import (
+    AgentEvent,
+    AssistantDelta,
+    RunCompleted,
+    ToolCompleted,
+    ToolStarted,
+)
 
 
 class RunawayLoop(BaseException):
@@ -74,13 +84,20 @@ class FakeAgent:
     create_error: ClassVar[BaseException | None] = None
     handle_hook: ClassVar[Any] = None
 
-    def __init__(self, model: str | None = None, config: Any = None, memory: Any = None) -> None:
+    def __init__(
+        self,
+        model: str | None = None,
+        config: Any = None,
+        memory: Any = None,
+        personal: Any = None,
+    ) -> None:
         create_error = type(self).create_error
         if create_error is not None:
             raise create_error
         self.model = model or "ollama:fake"
         self.config = config
         self.memory = memory
+        self.personal = personal
         self.events: list[str] = []
         self.messages: list[str] = []
         type(self).created.append(self)
@@ -104,6 +121,12 @@ class FakeAgent:
 
     def cancel(self) -> None:
         self.events.append("cancel")
+
+    def cancel_suggestions(self) -> None:
+        self.events.append("cancel_suggestions")
+
+    def suggest(self) -> list[str]:
+        return ["Tell me more", "Why?"]
 
     def interrupt(self) -> None:
         self.events.append("interrupt")
@@ -134,14 +157,23 @@ class StreamingFakeAgent:
     reply_gate: ClassVar[threading.Event | None] = None
     reply_error: ClassVar[BaseException | None] = None
     conversation: ClassVar[list[Any]] = []
+    follow_ups: ClassVar[list[str]] = ["Tell me more", "Why?"]
+    statuses: ClassVar[list[str]] = []
 
-    def __init__(self, model: str | None = None, config: Any = None, memory: Any = None) -> None:
+    def __init__(
+        self,
+        model: str | None = None,
+        config: Any = None,
+        memory: Any = None,
+        personal: Any = None,
+    ) -> None:
         create_error = type(self).create_error
         if create_error is not None:
             raise create_error
         self.model = model or "ollama:fake"
         self.config = config
         self.memory = memory
+        self.personal = personal
         self.events: list[str] = []
         self.messages: list[str] = []
         self.cancelled = threading.Event()
@@ -153,11 +185,24 @@ class StreamingFakeAgent:
         return type(
             "IsolatedStreamingFakeAgent",
             (cls,),
-            {"created": [], "tokens": list(cls.tokens), "conversation": []},
+            {
+                "created": [],
+                "tokens": list(cls.tokens),
+                "conversation": [],
+                "follow_ups": list(cls.follow_ups),
+                "statuses": [],
+            },
         )
 
     def history(self) -> list[Any]:
         return list(type(self).conversation)
+
+    def suggest(self) -> list[str]:
+        self.events.append("suggest")
+        return list(type(self).follow_ups)
+
+    def cancel_suggestions(self) -> None:
+        self.events.append("cancel_suggestions")
 
     def warm_up(self) -> None:
         self.events.append("warm_up")
@@ -167,6 +212,17 @@ class StreamingFakeAgent:
         error = type(self).warm_up_error
         if error is not None:
             raise error
+
+    def run(self, text: str) -> Iterator[AgentEvent]:
+        """Typed events, as the real agent gives them: tools first, then the reply."""
+        characters = 0
+        for status in type(self).statuses:
+            yield ToolStarted("fake_tool", status)
+            yield ToolCompleted("fake_tool")
+        for piece in self.handle(text):
+            characters += len(piece)
+            yield AssistantDelta(piece)
+        yield RunCompleted(0.01, characters)
 
     def handle(self, text: str) -> Iterator[str]:
         self.messages.append(text)
@@ -217,6 +273,38 @@ class RecordingFakeModel(GenericFakeChatModel):
     def replying(cls, *texts: str, **fields: Any) -> RecordingFakeModel:
         """Build a model that gives each of ``texts`` as a reply, in order."""
         return cls(messages=iter([AIMessage(content=text) for text in texts]), **fields)
+
+
+class ToolCallingFakeModel(RecordingFakeModel):
+    """Fake model that calls one tool, then answers once it has the tool's result."""
+
+    tool_name: str = "echo"
+    tool_args: dict[str, Any] = Field(default_factory=lambda: {"text": "hi"})
+    final_answer: str = "It is 4."
+
+    def _generate(self, messages: list[BaseMessage], *_args: Any, **_kwargs: Any) -> ChatResult:
+        self.seen_messages.append(messages)
+        return ChatResult(generations=[ChatGeneration(message=self._next(messages))])
+
+    def _stream(
+        self, messages: list[BaseMessage], *_args: Any, **_kwargs: Any
+    ) -> Iterator[ChatGenerationChunk]:
+        self.seen_messages.append(messages)
+        if any(message.type == "tool" for message in messages):
+            yield ChatGenerationChunk(message=AIMessageChunk(content=self.final_answer))
+            return
+        call = ToolCallChunk(
+            name=self.tool_name, args=json.dumps(self.tool_args), id="call-1", index=0
+        )
+        yield ChatGenerationChunk(message=AIMessageChunk(content="", tool_call_chunks=[call]))
+
+    def _next(self, messages: list[BaseMessage]) -> AIMessage:
+        if any(message.type == "tool" for message in messages):
+            return AIMessage(content=self.final_answer)
+        return AIMessage(
+            content="",
+            tool_calls=[{"name": self.tool_name, "args": self.tool_args, "id": "call-1"}],
+        )
 
 
 class PromptAwareFakeModel(RecordingFakeModel):
@@ -288,3 +376,59 @@ class FakeRunner:
     def commands(self) -> list[str]:
         """The first word of each command run, in order."""
         return [call[0] for call in self.calls]
+
+
+def personal_memory(directory: Any = None, **settings: Any) -> Any:
+    """A memory that is certainly on, in RAM or in ``directory``."""
+    from dataclasses import replace
+
+    from tzara.config import MemorySettings
+    from tzara.memory import PersonalMemory
+
+    memory = PersonalMemory.open(replace(MemorySettings(), **settings), directory)
+    assert memory is not None
+    return memory
+
+
+class SideDispatcher:
+    """What a helper request (one made at temperature 0) talks to in tests.
+
+    The router asks the model what kind of every question this is, which in a real agent goes to
+    a connection of its own. Here that question is answered at once, so that it does not use up a
+    reply scripted for the real answer; any other helper request goes to the scripted model, as it
+    always did.
+    """
+
+    TOPIC_QUESTION = "Decide what kind of question this is"
+
+    def __init__(self, model: Any, topic: str = "general") -> None:
+        self.model = model
+        self.topic = topic
+
+    def invoke(self, prompt: Any, *args: Any, **kwargs: Any) -> Any:
+        if self.TOPIC_QUESTION in str(prompt):
+            return AIMessage(content=self.topic)
+        return self.model.invoke(prompt, *args, **kwargs)
+
+
+def fake_creator(model: Any, topic: str = "general") -> Any:
+    """A stand-in for ``ModelFactory.create``: the scripted model, and a dispatcher for helpers."""
+    side = SideDispatcher(model, topic)
+
+    def create(_spec: str, temperature: float | None = None) -> Any:
+        return model if temperature is None else side
+
+    return create
+
+
+class EchoTool(BaseTool):
+    """A harmless tool for tests where the model has to call something."""
+
+    name: str = "echo"
+    description: str = "Repeat the text."
+    args_schema: type[BaseModel] = type(
+        "EchoArgs", (BaseModel,), {"__annotations__": {"text": str}}
+    )
+
+    def _run(self, text: str) -> str:
+        return text

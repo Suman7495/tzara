@@ -34,6 +34,7 @@ struct SettingsView: View {
                     if isRenaming { ProgressView().controlSize(.small) }
                 }
             }
+            Section("Memory") { memorySection }
             Section {
                 LabeledContent("Hotkey") { hotkeyStatus }
                 LabeledContent("Server") { serverStatus }
@@ -108,6 +109,53 @@ struct SettingsView: View {
         } else if let message = settings.message {
             Text(message).font(.caption).foregroundStyle(.secondary)
         }
+    }
+
+    // MARK: - Memory
+
+    @ViewBuilder private var memorySection: some View {
+        if let memory = settings.memory {
+            if !memory.enabled {
+                Text("Memory is turned off (TZARA_MEMORY=false). Nothing is kept between conversations.")
+                    .font(.caption).foregroundStyle(.secondary)
+            } else if memory.facts.isEmpty {
+                Text("Nothing yet. Tell Tzara \u{201C}remember that \u{2026}\u{201D} and it will show up here.")
+                    .font(.caption).foregroundStyle(.secondary)
+            } else {
+                ForEach(memory.facts) { fact in
+                    HStack(alignment: .firstTextBaseline) {
+                        Text(fact.text).font(.callout).textSelection(.enabled)
+                        Spacer(minLength: 8)
+                        Button { settings.forget(fact) } label: { Image(systemName: "trash") }
+                            .buttonStyle(.plain)
+                            .foregroundStyle(.secondary)
+                            .help("Forget this")
+                            .accessibilityLabel("Forget: \(fact.text)")
+                    }
+                }
+            }
+            if memory.enabled {
+                Button("Erase all memory\u{2026}", role: .destructive) { confirmErase(memory) }
+                    .disabled(memory.facts.isEmpty && memory.conversations == 0)
+            }
+        } else {
+            ProgressView().controlSize(.small)
+        }
+        if let message = settings.memoryMessage {
+            Text(message).font(.caption).foregroundStyle(.secondary)
+        }
+    }
+
+    private func confirmErase(_ memory: MemoryOverview) {
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "Erase everything Tzara remembers?"
+        alert.informativeText = "This forgets \(memory.facts.count) things about you and "
+            + "\(memory.conversations) stored conversations, including the one on screen. It cannot be undone."
+        alert.addButton(withTitle: "Erase").hasDestructiveAction = true
+        alert.addButton(withTitle: "Cancel")
+        NSApplication.shared.activate(ignoringOtherApps: true)
+        if alert.runModal() == .alertFirstButtonReturn { settings.eraseMemory() }
     }
 
     // MARK: - Uninstall

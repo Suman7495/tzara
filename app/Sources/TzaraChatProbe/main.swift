@@ -52,6 +52,10 @@ do {
             switch event {
             case let .token(text):
                 show(text)
+            case let .tool(name, state):
+                show("\n[tool \(name): \(state.rawValue)]")
+            case let .status(text):
+                show("\n[\(text)]\n")
             case let .done(firstTokenSeconds, characters):
                 let first = firstTokenSeconds.map { String(format: "%.2fs", $0) } ?? "n/a"
                 show("\n[done: \(characters) characters, first token \(first)]\n")

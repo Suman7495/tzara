@@ -14,7 +14,7 @@ import pytest
 import uvicorn
 from fastapi.testclient import TestClient
 
-from helpers import StreamingFakeAgent
+from helpers import StreamingFakeAgent, personal_memory
 from tzara.agent.memory import ConversationMemory, HistoryMessage
 from tzara.config import ServerSettings, TzaraConfig
 from tzara.server.app import ShutdownAwareServer, TzaraServer
@@ -727,3 +727,100 @@ class TestServe:
         service.start()
         service.rename("Friday")
         assert (tmp_path / "name").read_text(encoding="utf-8") == "Friday"
+
+
+class TestStatusEvents:
+    def test_what_the_agent_is_doing_is_streamed_before_the_reply(self, build, agents):
+        agents.statuses = ["Searching the web for “cats”…"]
+        client, _, _ = build()
+        events = parse_events(client.post("/v1/chat", json={"message": "hi"}, headers=AUTH).text)
+        names = [name for name, _ in events]
+        assert names[:3] == ["tool", "status", "tool"] and names[-1] == "done"
+        assert events[0][1] == {"name": "fake_tool", "state": "started"}
+        assert events[1][1] == {"text": "Searching the web for “cats”…"}
+        assert events[2][1] == {"name": "fake_tool", "state": "completed"}
+
+
+class TestMemoryEndpoints:
+    @staticmethod
+    def personal(*facts):
+
+        memory = personal_memory()
+        assert memory is not None
+        for fact in facts:
+            memory.facts.add(fact)
+        return memory
+
+    def build_with(self, agents, personal):
+        service = ChatService(TzaraConfig(), agent_factory=agents, personal=personal)
+        service.start()
+        server = TzaraServer(service, TOKEN, ServerSettings(port=PORT))
+        client = TestClient(server.app, base_url=BASE)
+        client.__enter__()
+        return client, service
+
+    def test_lists_what_is_remembered(self, agents):
+        client, _ = self.build_with(agents, self.personal("The user likes tea."))
+        body = client.get("/v1/memory", headers=AUTH).json()
+        assert body["enabled"] is True and body["conversations"] == 0
+        assert [f["text"] for f in body["facts"]] == ["The user likes tea."]
+
+    def test_says_when_memory_is_off(self, build):
+        client, _, _ = build()
+        assert client.get("/v1/memory", headers=AUTH).json() == {
+            "enabled": False,
+            "facts": [],
+            "conversations": 0,
+        }
+
+    def test_forgets_one_fact(self, agents):
+        personal = self.personal("one fact", "two fact")
+        client, _ = self.build_with(agents, personal)
+        target = next(f for f in personal.facts.all() if f.text == "one fact")
+        assert client.delete(f"/v1/memory/facts/{target.id}", headers=AUTH).status_code == 204
+        assert client.delete(f"/v1/memory/facts/{target.id}", headers=AUTH).status_code == 404
+        assert [f.text for f in personal.facts.all()] == ["two fact"]
+
+    def test_erases_everything(self, agents):
+        personal = self.personal("one fact")
+        personal.log.append(personal.log.start(), "user", "hello")
+        client, _ = self.build_with(agents, personal)
+        assert client.delete("/v1/memory", headers=AUTH).status_code == 204
+        assert personal.facts.count() == 0 and personal.log.count() == 0
+
+    def test_erasing_is_refused_while_a_reply_is_being_written(self, build, agents):
+        agents.reply_gate = threading.Event()
+        client, service, _ = build()
+        service.start_turn("hi", lambda event: None)
+        wait_until(lambda: service.busy)
+        assert client.delete("/v1/memory", headers=AUTH).status_code == 409
+        agents.reply_gate.set()
+
+    @pytest.mark.parametrize(
+        ("method", "path"),
+        [("get", "/v1/memory"), ("delete", "/v1/memory"), ("delete", "/v1/memory/facts/1")],
+    )
+    def test_all_of_it_needs_the_token(self, build, method, path):
+        client, _, _ = build()
+        assert getattr(client, method)(path).status_code == 401
+
+
+class TestWakeEndpoint:
+    def test_answers_at_once_and_says_whether_it_is_waking(self, agents):
+        from tzara.config import ServerSettings
+
+        config = TzaraConfig(server=ServerSettings(port=PORT, wake_after_seconds=0))
+        service = ChatService(config, agent_factory=agents)
+        service.start()
+        client = TestClient(TzaraServer(service, TOKEN, config.server).app, base_url=BASE)
+        client.__enter__()
+        response = client.post("/v1/wake", headers=AUTH)
+        assert response.status_code == 202 and response.json() == {"waking": True}
+
+    def test_a_recently_used_model_is_left_alone(self, build):
+        client, _, _ = build()
+        assert client.post("/v1/wake", headers=AUTH).json() == {"waking": False}
+
+    def test_needs_the_token(self, build):
+        client, _, _ = build()
+        assert client.post("/v1/wake").status_code == 401

@@ -7,6 +7,8 @@ struct ChatView: View {
     /// Where the input line sits, measured from the box's bottom-left corner. The box is
     /// placed so the mouse pointer lands here, so these must match the layout below.
     static let inputLine = CGPoint(x: 28, y: 22)
+    /// An empty view after the conversation, which it scrolls to so nothing is hidden below.
+    private static let endOfTranscript = "end-of-transcript"
 
     @ObservedObject var model: ChatModel
     let onClose: () -> Void
@@ -65,11 +67,16 @@ struct ChatView: View {
                     .help("New conversation")
                     .accessibilityLabel("New conversation")
             }
-            Button(action: onClose) { Image(systemName: "xmark.circle.fill").imageScale(.large) }
-                .buttonStyle(.plain)
-                .foregroundStyle(.secondary)
-                .help("Close (Esc)")
-                .accessibilityLabel("Close")
+            // While a reply is being written, closing only hides the box: the reply carries on and
+            // the menu-bar icon says when it is ready.
+            let working = model.phase != .idle
+            Button(action: onClose) {
+                Image(systemName: working ? "minus.circle.fill" : "xmark.circle.fill").imageScale(.large)
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(.secondary)
+            .help(working ? "Minimize \u{2013} keeps working (Esc)" : "Close (Esc)")
+            .accessibilityLabel(working ? "Minimize" : "Close")
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 10)
@@ -115,26 +122,34 @@ struct ChatView: View {
     private var transcript: some View {
         ScrollViewReader { proxy in
             ScrollView {
-                LazyVStack(alignment: .leading, spacing: 10) {
+                // Not a LazyVStack: it guesses the height of rows it has not drawn, so scrolling to
+                // the end of a tall reply stopped short. A chat is short enough to draw in full.
+                VStack(alignment: .leading, spacing: 10) {
                     if model.messages.isEmpty { emptyState }
                     ForEach(model.messages) { message in
+                        let isLast = message.id == model.messages.last?.id
                         MessageRow(
                             message: message,
-                            waiting: model.phase == .waiting && message.id == model.messages.last?.id
+                            waiting: model.phase == .waiting && isLast,
+                            writing: model.phase != .idle && isLast,
+                            activity: isLast ? model.activity : nil
                         )
                         .id(message.id)
                     }
+                    Color.clear.frame(height: 1).id(Self.endOfTranscript)
                 }
                 .padding(14)
             }
-            .onChange(of: model.messages) { messages in
-                guard let last = messages.last else { return }
-                proxy.scrollTo(last.id, anchor: .bottom)
-            }
-            .onChange(of: model.scrollRequest) { _ in
-                guard let last = model.messages.last else { return }
-                proxy.scrollTo(last.id, anchor: .bottom)
-            }
+            .onChange(of: model.messages) { _ in scrollToEnd(proxy) }
+            .onChange(of: model.scrollRequest) { _ in scrollToEnd(proxy) }
+        }
+    }
+
+    /// Scrolls to the end once the new content has been laid out; asked at once, the end is
+    /// still where it was before the content changed.
+    private func scrollToEnd(_ proxy: ScrollViewProxy) {
+        DispatchQueue.main.async {
+            proxy.scrollTo(Self.endOfTranscript, anchor: .bottom)
         }
     }
 
@@ -185,24 +200,84 @@ struct ChatView: View {
 
 private struct MessageRow: View {
     let message: ChatMessage
+    /// The message has been sent and nothing has come back yet.
     let waiting: Bool
+    /// The reply is still being written, so it is not yet worth copying.
+    let writing: Bool
+    /// What the assistant is doing right now, such as searching the web.
+    let activity: String?
+    @State private var copied = false
+
+    /// Room kept at the right of a bubble for the copy button, so the text does not move
+    /// when the button appears after the reply is finished.
+    private static let copyGutter: CGFloat = 26
 
     var body: some View {
         HStack {
             if message.role == .user { Spacer(minLength: 40) }
-            Group {
-                if waiting && message.text.isEmpty {
-                    ProgressView().controlSize(.small)
+            bubble
+            if message.role == .assistant { Spacer(minLength: 40) }
+        }
+        .frame(maxWidth: .infinity, alignment: message.role == .user ? .trailing : .leading)
+    }
+
+    private var hasText: Bool { !message.text.isEmpty }
+
+    private var bubble: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            if hasText {
+                if message.role == .assistant {
+                    MarkdownView(text: message.text)
                 } else {
                     Text(message.text).textSelection(.enabled)
                 }
             }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 7)
-            .background(
-                message.role == .user ? AnyShapeStyle(Color.accentColor.opacity(0.22)) : AnyShapeStyle(.quaternary),
-                in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-            if message.role == .assistant { Spacer(minLength: 40) }
+            // While the assistant works it says what it is doing, so it does not look stuck.
+            if message.role == .assistant, waiting || activity != nil {
+                HStack(spacing: 6) {
+                    ProgressView().controlSize(.small)
+                    Text(activity ?? "Thinking\u{2026}")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                }
+            }
+        }
+        .padding(.leading, 10)
+        .padding(.trailing, hasText ? Self.copyGutter : 10)
+        .padding(.vertical, 7)
+        .background(
+            message.role == .user ? AnyShapeStyle(Color.accentColor.opacity(0.22)) : AnyShapeStyle(.quaternary),
+            in: RoundedRectangle(cornerRadius: 10, style: .continuous)
+        )
+        .overlay(alignment: .topTrailing) {
+            if hasText, !writing { copyButton }
+        }
+    }
+
+    /// Copies the message's text, as written (with its Markdown), to the clipboard.
+    private var copyButton: some View {
+        Button(action: copy) {
+            Image(systemName: copied ? "checkmark" : "doc.on.doc")
+                .font(.caption)
+                .frame(width: 22, height: 22)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(.secondary)
+        .padding(.top, 3)
+        .padding(.trailing, 3)
+        .help(copied ? "Copied" : "Copy this message")
+        .accessibilityLabel("Copy message")
+    }
+
+    private func copy() {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(message.text, forType: .string)
+        copied = true
+        Task {
+            try? await Task.sleep(nanoseconds: 1_500_000_000)
+            copied = false
         }
     }
 }

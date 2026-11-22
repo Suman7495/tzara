@@ -1,10 +1,12 @@
 import logging
 import runpy
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
 import pytest
 
+from tzara.agent.memory import ConversationMemory
 from tzara.cli import launcher as launcher_module
 from tzara.cli.launcher import (
     EXIT_BAD_CONFIG,
@@ -13,8 +15,9 @@ from tzara.cli.launcher import (
     EXIT_OK,
     Launcher,
 )
-from tzara.config import TzaraConfig
+from tzara.config import MemorySettings, ServerSettings, TzaraConfig
 from tzara.logs import LogConfigurator
+from tzara.memory import PersonalMemory
 from tzara.server.daemon import DaemonError, DaemonStatus
 from tzara.server.files import ServerInfo
 
@@ -135,20 +138,43 @@ class TestMain:
 
 
 class TestChatAndServe:
-    def test_chat_opens_the_interactive_cli(self, monkeypatch):
+    def test_chat_opens_the_interactive_cli(self, monkeypatch, tmp_path):
         calls: list[tuple[Any, ...]] = []
 
         class FakeCLI:
-            def __init__(self, config, log_path):
-                calls.append(("init", config.model, log_path))
+            def __init__(self, config, log_path, memory, personal):
+                calls.append(("init", config.model, log_path, memory, personal))
 
             def run(self):
                 calls.append(("run",))
 
         monkeypatch.setattr("tzara.cli.run.TzaraCLI", FakeCLI)
-        launcher = Launcher(TzaraConfig(), log_path=Path("/var/log/tzara.log"))
+        config = replace(TzaraConfig(), server=ServerSettings(data_dir=tmp_path))
+        launcher = Launcher(config, log_path=Path("/var/log/tzara.log"))
         assert launcher.chat() == EXIT_OK
-        assert calls == [("init", TzaraConfig().model, Path("/var/log/tzara.log")), ("run",)]
+        (_, model, log_path, memory, personal), run = calls
+        assert (model, log_path, run) == (config.model, Path("/var/log/tzara.log"), ("run",))
+        assert isinstance(personal, PersonalMemory) and (tmp_path / "memory.db").exists()
+        assert isinstance(memory, ConversationMemory)
+
+    def test_chat_keeps_nothing_when_memory_is_off(self, monkeypatch, tmp_path):
+        calls: list[Any] = []
+
+        class FakeCLI:
+            def __init__(self, config, log_path, memory, personal):
+                calls.append(personal)
+
+            def run(self):
+                pass
+
+        monkeypatch.setattr("tzara.cli.run.TzaraCLI", FakeCLI)
+        config = replace(
+            TzaraConfig(),
+            server=ServerSettings(data_dir=tmp_path),
+            memory=MemorySettings(enabled=False),
+        )
+        Launcher(config).chat()
+        assert calls == [None] and not (tmp_path / "memory.db").exists()
 
     def test_serve_runs_the_server_in_this_process(self, monkeypatch):
         served = []

@@ -1,9 +1,20 @@
 import Foundation
 
+/// Where a tool the assistant is using has got to.
+public enum ToolState: String, Equatable, Sendable {
+    case started, completed, failed
+}
+
 /// What the server sends while it writes a reply.
 public enum ChatEvent: Equatable, Sendable {
     /// A piece of the reply.
     case token(String)
+    /// What the agent is doing right now, such as "Searching the web for ...". It is shown
+    /// while waiting, so a long search does not look like a hang.
+    case status(String)
+    /// A tool the assistant uses started, finished, or failed. Unlike ``status``, which is a
+    /// sentence for the person, this names the tool so the app can tell when it is all done.
+    case tool(name: String, state: ToolState)
     /// The reply is complete.
     case done(firstTokenSeconds: Double?, characters: Int)
     /// The reply failed part-way.
@@ -88,6 +99,14 @@ public struct EventStreamParser {
         case "token":
             guard let token = try? decoder.decode(TokenPayload.self, from: payload) else { return unreadable }
             return .token(token.text)
+        case "status":
+            guard let status = try? decoder.decode(TokenPayload.self, from: payload) else { return unreadable }
+            return .status(status.text)
+        case "tool":
+            // A state this app does not know is skipped, like an event it does not know.
+            guard let tool = try? decoder.decode(ToolPayload.self, from: payload) else { return unreadable }
+            guard let state = ToolState(rawValue: tool.state) else { return nil }
+            return .tool(name: tool.name, state: state)
         case "done":
             guard let done = try? decoder.decode(DonePayload.self, from: payload) else { return unreadable }
             return .done(firstTokenSeconds: done.firstTokenSeconds, characters: done.characters)
@@ -101,6 +120,10 @@ public struct EventStreamParser {
 
     private struct TokenPayload: Decodable { let text: String }
     private struct ErrorPayload: Decodable { let message: String }
+    private struct ToolPayload: Decodable {
+        let name: String
+        let state: String
+    }
     private struct DonePayload: Decodable {
         let firstTokenSeconds: Double?
         let characters: Int
