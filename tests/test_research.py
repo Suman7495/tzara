@@ -1,3 +1,5 @@
+from typing import ClassVar
+
 import pytest
 
 from tzara.config import ResearchSettings
@@ -191,3 +193,49 @@ class TestHedging:
         text = r.research("how to enable cors")
         release.set()
         assert "Use CORSMiddleware" in text and "blog text" not in text
+
+
+class FakeExtra:
+    def __init__(self, hits, applies=True):
+        self._hits, self._applies, self.queries = hits, applies, []
+
+    def applies(self, question):
+        return self._applies
+
+    def hits(self, query):
+        self.queries.append(query)
+        return self._hits
+
+
+class TestExtraSources:
+    WIKI: ClassVar[list[SearchHit]] = [SearchHit("Wiki", "https://en.wikipedia.org/wiki/Cors", "x")]
+
+    def make(self, results, extra):
+        backend = FakeBackend(results)
+        return Researcher(
+            ResearchSettings(), backend, FakeReader({}), Prompts(), extras=[extra]
+        ), backend
+
+    def test_extra_sources_fill_in_when_the_search_finds_nothing(self):
+        r, _ = self.make({"*": WebError("none")}, FakeExtra(self.WIKI))
+        assert "en.wikipedia.org/wiki/Cors" in r.research("what is cors")
+
+    def test_extra_hits_never_outrank_the_searchs_best_pages(self):
+        hits = [SearchHit("Docs", "https://docs.example.org/a", "x")]
+        r, _ = self.make({"*": hits}, FakeExtra(self.WIKI))
+        text = r.research("what is cors")
+        assert text.index("docs.example.org") < text.index("wikipedia.org")
+
+    def test_a_source_that_does_not_apply_is_not_asked(self):
+        extra = FakeExtra(self.WIKI, applies=False)
+        r, _ = self.make({"*": HITS}, extra)
+        r.research("who won on sunday")
+        assert extra.queries == []
+
+    def test_a_failing_extra_source_is_ignored(self):
+        class Failing(FakeExtra):
+            def hits(self, query):
+                raise WebError("down")
+
+        r, _ = self.make({"*": HITS}, Failing([]))
+        assert "docs.example.org" in r.research("how to enable cors")

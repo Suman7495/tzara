@@ -1,7 +1,7 @@
 """Tests for the web tools. Nothing here touches the network."""
 
 from dataclasses import replace
-from typing import cast
+from typing import ClassVar, cast
 
 import httpx
 import pytest
@@ -20,6 +20,7 @@ from tzara.tools.web import (
     UrlGuard,
     WebError,
     WebTools,
+    WikipediaBackend,
 )
 
 PUBLIC = "93.184.216.34"
@@ -423,27 +424,92 @@ class TestSanitizer:
 
 
 class TestEngines:
-    def test_the_configured_engines_are_asked(self):
+    def run(self, answers):
+        """Search with a fake ``ddgs`` that answers each call from ``answers``; return the calls."""
         import sys
         import types
 
-        seen = {}
+        calls = []
 
         class FakeDDGS:
             def __init__(self, timeout):
-                seen["timeout"] = timeout
+                self.timeout = timeout
 
             def text(self, query, **kwargs):
-                seen.update(kwargs)
-                return [{"title": "T", "href": "https://a.example", "body": "b"}]
+                calls.append(kwargs["backend"])
+                answer = answers[len(calls) - 1]
+                if isinstance(answer, Exception):
+                    raise answer
+                return answer
 
-        module = types.SimpleNamespace(DDGS=FakeDDGS)
-        sys.modules["ddgs"] = module  # type: ignore[assignment]
+        sys.modules["ddgs"] = types.SimpleNamespace(DDGS=FakeDDGS)  # type: ignore[assignment]
         try:
-            backend = DuckDuckGoBackend(WebSettings(engines="bing,google"))
+            backend = DuckDuckGoBackend(WebSettings(engines="yahoo,brave"))
             # conftest blocks the real search; it keeps the real one under another name
             backend._search = backend._real_ddgs_search  # type: ignore[attr-defined]
-            hits = backend.hits("q")
+            try:
+                return backend.hits("q"), calls
+            except WebError:
+                return [], calls
         finally:
             del sys.modules["ddgs"]
-        assert hits[0].title == "T" and seen["backend"] == "bing,google"
+
+    ROW: ClassVar[list[dict[str, str]]] = [{"title": "T", "href": "https://a.example", "body": "b"}]
+
+    def test_the_fast_engines_are_asked_first(self):
+        hits, calls = self.run([self.ROW])
+        assert hits[0].title == "T" and calls == ["yahoo,brave"]
+
+    def test_all_engines_are_tried_when_the_fast_ones_find_nothing(self):
+        hits, calls = self.run([Exception("No results found."), self.ROW])
+        assert hits[0].title == "T" and calls == ["yahoo,brave", "auto"]
+
+    def test_empty_everywhere_is_no_results(self):
+        hits, calls = self.run([[], [], [], []])
+        assert hits == [] and calls[:2] == ["yahoo,brave", "auto"]
+
+
+class TestFreeApis:
+    def client(self, handler):
+        return httpx.Client(transport=httpx.MockTransport(handler))
+
+    def test_wikipedia_hits_have_clean_snippets_and_article_addresses(self):
+        def handler(request):
+            assert (
+                request.url.host == "en.wikipedia.org" and request.url.params["srsearch"] == "cors"
+            )
+            found = [
+                {
+                    "title": "Cross-origin resource sharing",
+                    "snippet": "a <span>mechanism</span> &amp; more",
+                },
+                {"snippet": "no title"},
+            ]
+            return httpx.Response(200, json={"query": {"search": found}})
+
+        hits = WikipediaBackend(WebSettings(), self.client(handler)).hits("cors")
+        assert hits == [
+            SearchHit(
+                "Cross-origin resource sharing",
+                "https://en.wikipedia.org/wiki/Cross-origin_resource_sharing",
+                "a mechanism & more",
+            )
+        ]
+
+    def test_wikipedia_uses_the_configured_language(self):
+        def handler(request):
+            assert request.url.host == "de.wikipedia.org"
+            return httpx.Response(
+                200, json={"query": {"search": [{"title": "Berlin", "snippet": ""}]}}
+            )
+
+        hits = WikipediaBackend(WebSettings(wikipedia_language="de"), self.client(handler)).hits(
+            "x"
+        )
+        assert hits[0].url == "https://de.wikipedia.org/wiki/Berlin"
+
+    def test_failures_and_empty_answers_are_web_errors(self):
+        for response in (httpx.Response(403), httpx.Response(200, json={})):
+            backend = WikipediaBackend(WebSettings(), self.client(lambda _r, r=response: r))
+            with pytest.raises(WebError):
+                backend.hits("q")

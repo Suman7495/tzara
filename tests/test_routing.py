@@ -5,7 +5,8 @@ import pytest
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
 from tzara.agent.routing import QuestionRules, ResearchRouter
-from tzara.config import ResearchSettings
+from tzara.agent.screen import ScreenBlock, ScreenContext
+from tzara.config import ResearchSettings, ScreenSettings
 
 RULES = QuestionRules(ResearchSettings())
 
@@ -70,6 +71,15 @@ class TestRouter:
         (call,) = reply.tool_calls
         assert call["name"] == "research" and call["args"] == {"question": "how do I x?"}
         assert str(call["id"]).startswith("route-")
+
+    def test_a_message_with_screen_context_is_left_to_the_model(self):
+        wrapped = ScreenBlock.wrap(
+            ScreenContext("Notes", selection="Is this right?"),
+            "what does this mean?",
+            ScreenSettings(),
+        )
+        reply, _ = self.route(HumanMessage(content=wrapped))
+        assert reply.tools == ["research"]
 
     def test_other_messages_go_to_the_model_with_its_tools(self):
         reply, _ = self.route(HumanMessage(content="hi"))

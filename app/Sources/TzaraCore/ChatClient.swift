@@ -108,12 +108,14 @@ public final class ChatClient: @unchecked Sendable {
     ///
     /// Stop consuming the stream (or cancel the task reading it) to cancel the reply: the
     /// connection closes and the server stops writing.
-    public func stream(_ message: String) -> AsyncThrowingStream<ChatEvent, Error> {
+    public func stream(_ message: String, context: ScreenContext? = nil) -> AsyncThrowingStream<ChatEvent, Error> {
         AsyncThrowingStream { continuation in
             let task = Task {
                 do {
                     let request = try makeRequest(
-                        path: "/v1/chat", method: "POST", body: ["message": message], timeout: Self.replyTimeout)
+                        path: "/v1/chat", method: "POST",
+                        body: ChatBody(message: message, context: context.flatMap { $0.isEmpty ? nil : $0 }),
+                        timeout: Self.replyTimeout)
                     let (bytes, response) = try await session.bytes(for: request)
                     if let http = response as? HTTPURLResponse, http.statusCode != 200 {
                         var body = Data()
@@ -250,4 +252,10 @@ public final class ChatClient: @unchecked Sendable {
         init(_ value: any Encodable) { self.value = value }
         func encode(to encoder: Encoder) throws { try value.encode(to: encoder) }
     }
+}
+
+/// The body of `POST /v1/chat`. The context is left out when there is none.
+private struct ChatBody: Encodable {
+    let message: String
+    let context: ScreenContext?
 }

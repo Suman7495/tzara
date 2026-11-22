@@ -11,6 +11,7 @@ from langchain.agents.middleware import AgentMiddleware
 from langchain.agents.middleware.types import ModelRequest, ModelResponse
 from langchain_core.messages import AIMessage
 
+from tzara.agent.screen import ScreenBlock
 from tzara.config import ResearchSettings
 
 
@@ -88,7 +89,14 @@ class ResearchRouter(AgentMiddleware):
     ) -> Any:
         """Call the research tool for the user's message if it needs the web, else carry on."""
         last = request.messages[-1] if request.messages else None
-        if last is not None and last.type == "human" and self._rules.needs_sources(last.text):
+        # A message that comes with the user's screen is about that text; the model may still
+        # call research itself if it needs to.
+        if (
+            last is not None
+            and last.type == "human"
+            and not last.text.startswith(ScreenBlock.START)
+            and self._rules.needs_sources(last.text)
+        ):
             call = {
                 "name": self._tool,
                 "args": {"question": last.text.strip()},

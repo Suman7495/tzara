@@ -16,6 +16,7 @@ It's fully local, supports multiple models, can search the web, open apps and si
 - [x] **Lightweight & low footprint** — Small Python core with fast startup and low memory usage, runs comfortably on a personal laptop.
 - [x] **Multi-Model Support** — Switch between Ollama, Anthropic, OpenAI, and Google models at runtime
 - [x] **Conversation Memory** — Remembers earlier messages across turns, interrupts and model switches
+- [x] **Understands what you are looking at** (off until you turn it on in Settings) — Open Tzara over any app and say "translate this", "summarize it" or "make it shorter": it knows which app and window you are in and the text you had selected. The box shows exactly what will be sent, you can remove it, and nothing is read from password managers or password fields. macOS asks for the Accessibility permission once
 - [x] **Web search and research** — For a question that asks for facts (how to fix something, health, news, comparisons, what to buy) it searches the web, reads the best pages with a proper article extractor (`trafilatura`; Stack Overflow through its public API), prefers official, reference and documentation sources, copies code from the docs, and answers from that with its sources. It uses no extra model request for this, so it stays quick, and it says what it is doing while it works (on by default; DuckDuckGo)
 - [x] **Open things and control music** — Opens apps (including Terminal), websites, files and folders, and plays, pauses or skips music and sets the volume (macOS; it cannot run commands)
 - [x] **Memory** — Remembers lasting things about you (your name, preferences, how you like answers) and picks the conversation up again after a restart. Ask it to remember or forget something; see and delete everything in Settings
@@ -132,6 +133,7 @@ Defaults live in [`TzaraConfig`](src/tzara/config.py). Override with environment
 | `TZARA_OLLAMA_REASONING` | `false` | Let thinking models such as Qwen3 think first; slower |
 | `TZARA_OLLAMA_RESERVED_TOKENS` | `4096` | Part of the window kept for the prompt and reply; the rest is the history budget |
 | `TZARA_WEB_SEARCH` | `true` | Let Tzara search the web and read pages. This is the one feature that sends something off your machine (the search query, and page requests); set `false` to keep everything local |
+| `TZARA_SCREEN` | `true` | Let the server accept the app, window and selected text the Mac app sends. The app only sends them if you turn the setting on; set `false` to ignore them |
 | `TZARA_SYSTEM_TOOLS` | `true` | Let Tzara open apps, sites, files and folders and control music (macOS only). It never runs commands or opens scripts and installers; set `false` to turn it off |
 | `TZARA_MEMORY` | `true` | Keep facts about you and your conversations on disk, in `memory.db` in the data folder (readable only by you). Set `false` and Tzara forgets everything when it stops |
 | `TZARA_LOG_LEVEL` | `INFO` | `DEBUG`, `INFO`, `WARNING`, `ERROR` or `CRITICAL` |

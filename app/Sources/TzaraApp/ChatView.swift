@@ -1,4 +1,5 @@
 import SwiftUI
+import TzaraCore
 
 /// The chat box: a title bar, the conversation, and an input line. A gear in the title bar
 /// swaps the conversation for the settings.
@@ -32,6 +33,7 @@ struct ChatView: View {
             } else {
                 transcript
                 if let notice = model.notice { noticeBar(notice) }
+                if let screen = model.screen { screenChip(screen) }
                 Divider()
                 inputBar
             }
@@ -168,6 +170,27 @@ struct ChatView: View {
             .padding(.horizontal, 14)
             .padding(.vertical, 8)
             .background(.quaternary)
+    }
+
+    // MARK: - What Tzara can see
+
+    /// What will be sent with the next message, so nothing goes out that the user cannot see.
+    private func screenChip(_ context: ScreenContext) -> some View {
+        HStack(spacing: 6) {
+            Image(systemName: "text.viewfinder")
+            Text(context.summary).lineLimit(1)
+            Spacer(minLength: 4)
+            Button(action: model.dropScreen) { Image(systemName: "xmark.circle.fill") }
+                .buttonStyle(.plain)
+                .help("Don't send this with the message")
+                .accessibilityLabel("Remove what Tzara can see")
+        }
+        .font(.callout)
+        .foregroundStyle(.secondary)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 6)
+        .background(.quaternary)
+        .help("Sent with your next message, so you can say \u{201C}this\u{201D} or \u{201C}it\u{201D}")
     }
 
     // MARK: - Input line

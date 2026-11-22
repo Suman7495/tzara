@@ -264,6 +264,28 @@ approval (there is no approval flow yet; add an event with it).
 - The transcript is a plain `VStack`, not a `LazyVStack`: lazy rows have guessed heights and `scrollTo` the end stopped
   short of tall replies. Scrolling is deferred one runloop turn (`DispatchQueue.main.async`), after layout.
 
+## Screen context
+
+What the user was looking at (app, window title, page address or document path, selected text) is read by the **Mac app**,
+not the server (it runs without a screen session): `ScreenReader` (Accessibility API) when the box opens, because the
+box is non-activating and the app the user was in is still in front. Off until the user turns it on in Settings (macOS
+asks for Accessibility; without it only the app name is read). The box shows a chip with exactly what will be sent and
+the user can remove it; it goes with that one message only.
+- Sent as `context` in `POST /v1/chat`; `agent/screen.py` (`ScreenBlock`) writes it in front of the user's message as a
+  block marked as data, so the stored message carries it (prompt cache stays valid) and `Tzara.history()` removes it
+  for display. `ConversationLog` records only what the user typed.
+- **It is untrusted text** (selected text may come from a web page or an email): the block says so, fields are cleaned
+  (`Sanitizer`) and cut, the block's own end marker cannot be faked from inside, `Activity.distrust()` makes
+  `remember` and `forget` refuse for that turn, and an address in the selection may be repeated in the reply (the user's
+  own text).
+- A message with a context block is **not** routed to web research (`ResearchRouter`): "what does this mean?" is
+  about the selection. The model may still call `research` itself.
+- Never read: password managers (`ScreenReader.neverRead`) and secure text fields. Web addresses lose their query and
+  fragment (`ScreenContext.cleanAddress`) because they often hold tokens.
+- Verified live: the window title and address of the front app. Not verified: selected text in each app (Chrome and
+  Electron apps need `AXManualAccessibility`, which the reader sets). Not built: replacing the selection in the other
+  app (would need simulated keystrokes into whatever is in front), reading the clipboard, files and other apps.
+
 ## Mac tools
 
 `tools/system.py`: `open_app`, `open_website`, `open_path`, `control_media` (`SystemTools.create`; macOS
@@ -329,9 +351,15 @@ together (`PageReader.fetch`) and keep the passages that match the question (`Pa
   planning, fact extraction with quote checks, product extraction and shop verification, places and shops, a second
   search round, Gemini search. A statement in the final answer is not checked against the pages.
 - **Search engines** (`WebSettings.engines`): `ddgs` in its default "auto" mode tries every engine, including ones that
-  hang on many networks (DuckDuckGo's HTML page, Yandex), and failed after 7 s on every test question; a fixed list
-  (`bing,google,brave,yahoo,startpage`) answered in 1-2 s. Direct requests to html.duckduckgo.com time out from some
+  hang on many networks (DuckDuckGo's HTML page), and took 7 s on some questions. `DuckDuckGoBackend` asks the fast list
+  first (`yahoo,brave,startpage,mojeek`: from this network only Yahoo answered, in ~1 s, and not for every question),
+  then "auto" if that found nothing. `ddgs` disables Bing and Google itself and quietly drops unknown names, so check
+  `ddgs.engines.ENGINES['text']` after upgrading it. Direct requests to html.duckduckgo.com time out from some
   networks, so there is no direct client. Searches and pages are remembered for `cache_seconds` (`TtlCache`).
+- **Free APIs besides the search engines** (`WikipediaBackend`, `StackExchange`): official, keyless, built for programs.
+  Wikipedia is searched in the same round as the web (`Researcher(extras=...)`), ranks below the web's best pages,
+  and fills in when the engines find nothing. GitHub repository search was tried and removed: its matches for
+  natural questions were noise.
 - **Hostile pages** (learned from OpenClaw's web plugins): `Sanitizer` removes invisible characters (zero-width, direction
   overrides, the "tag" block) from page text, titles and snippets, and only `max_html_chars` of a page are parsed.
 - Paid or keyed search APIs (Serper, Brave, Tavily...) were built and removed: the project is free and keyless.

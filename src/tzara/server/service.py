@@ -20,6 +20,7 @@ from tzara.agent.events import (
     ToolStarted,
 )
 from tzara.agent.memory import ConversationMemory, HistoryMessage
+from tzara.agent.screen import ScreenContext
 from tzara.config import TzaraConfig
 from tzara.memory import PersonalMemory
 from tzara.server.files import NameStore
@@ -110,7 +111,12 @@ class ChatTurn:
     """
 
     def __init__(
-        self, agent: Tzara, text: str, sink: EventSink, release: Callable[[], None]
+        self,
+        agent: Tzara,
+        text: str,
+        sink: EventSink,
+        release: Callable[[], None],
+        context: ScreenContext | None = None,
     ) -> None:
         """Prepare a turn. Nothing runs until :meth:`start`.
 
@@ -119,11 +125,13 @@ class ChatTurn:
             text: The user's message.
             sink: Receives each event, then ``None`` at the end.
             release: Called once the turn is over, to free the service.
+            context: What the user was looking at, if the app sent it.
         """
         self._agent = agent
         self._text = text
         self._sink = sink
         self._release = release
+        self._context = context
         self._cancelled = threading.Event()
 
     @property
@@ -147,7 +155,7 @@ class ChatTurn:
 
     def _run(self) -> None:
         """Stream the reply into the sink, whatever happens."""
-        replies = self._agent.run(self._text)
+        replies = self._agent.run(self._text, self._context)
         try:
             for event in replies:
                 if self.cancelled:
@@ -286,12 +294,15 @@ class ChatService:
                 self._state = ServiceState.READY
                 self._error = None
 
-    def start_turn(self, text: str, sink: EventSink) -> ChatTurn:
+    def start_turn(
+        self, text: str, sink: EventSink, context: ScreenContext | None = None
+    ) -> ChatTurn:
         """Begin answering ``text``.
 
         Args:
             text: The user's message.
             sink: Receives each event as it happens, then ``None``.
+            context: What the user was looking at, if the app sent it.
 
         Returns:
             The running turn, which can be cancelled.
@@ -305,7 +316,7 @@ class ChatService:
         if not self._lock.acquire(blocking=False):
             raise ServiceBusy("another reply is still being written")
         try:
-            turn = ChatTurn(self._agent, text, sink, release=self._end_turn)
+            turn = ChatTurn(self._agent, text, sink, release=self._end_turn, context=context)
             self._turn = turn
             turn.start()
         except BaseException:

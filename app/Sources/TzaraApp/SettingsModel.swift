@@ -25,6 +25,18 @@ final class SettingsModel: ObservableObject {
         didSet { preferences.autoUpdate = autoUpdate }
     }
 
+    /// Whether Tzara may look at the app in front when the box opens. Changing it is saved at once;
+    /// turning it on asks macOS for the Accessibility permission.
+    @Published var useScreen: Bool {
+        didSet {
+            screenPreferences.enabled = useScreen
+            if useScreen { ScreenReader.askForPermission() }
+            screenAllowed = ScreenReader.isAllowed
+        }
+    }
+    /// Whether macOS has given the permission that lets Tzara read selected text and window titles.
+    @Published private(set) var screenAllowed = ScreenReader.isAllowed
+
     /// What Tzara remembers about the user, or `nil` until the server has said.
     @Published private(set) var memory: MemoryOverview?
     /// What went wrong the last time memory was changed.
@@ -39,6 +51,7 @@ final class SettingsModel: ObservableObject {
     private let updater: Updater
     private let uninstaller: UpdateInstaller
     private let preferences: UpdatePreferences
+    private let screenPreferences: ScreenPreferences
 
     /// The version of the running app. A copy run straight from the build folder has none.
     let currentVersion: AppVersion
@@ -48,6 +61,7 @@ final class SettingsModel: ObservableObject {
         updater: Updater = Updater(),
         uninstaller: UpdateInstaller = UpdateInstaller(),
         preferences: UpdatePreferences = UpdatePreferences(),
+        screenPreferences: ScreenPreferences = ScreenPreferences(),
         currentVersion: AppVersion? = AppVersion(
             Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "")
     ) {
@@ -56,8 +70,13 @@ final class SettingsModel: ObservableObject {
         self.uninstaller = uninstaller
         self.preferences = preferences
         autoUpdate = preferences.autoUpdate
+        self.screenPreferences = screenPreferences
+        useScreen = screenPreferences.enabled
         self.currentVersion = currentVersion ?? AppVersion("0")!
     }
+
+    /// Looks again at whether macOS has given the permission, which the user may just have done.
+    func refreshScreenPermission() { screenAllowed = ScreenReader.isAllowed }
 
     var isSwitching: Bool { switchingTo != nil }
 

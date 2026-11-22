@@ -144,6 +144,34 @@ struct ChatClientStreamTests {
         #expect(String(data: seen.body, encoding: .utf8) == #"{"message":"What is 6 * 7?"}"#)
     }
 
+    @Test func sendsWhatTheUserWasLookingAtWithTheMessage() async throws {
+        final class Seen: @unchecked Sendable { var body = Data() }
+        let seen = Seen()
+        let harness = try makeHarness { request in
+            seen.body = body(of: request)
+            return .init(body: sse([("done", #"{"first_token_seconds": null, "characters": 0}"#)]))
+        }
+        let context = ScreenContext(app: "Notes", window: "Plans", selection: "hola")
+        _ = try await collect(harness.client.stream("translate this", context: context))
+
+        let sent = try JSONSerialization.jsonObject(with: seen.body) as? [String: Any]
+        #expect(sent?["message"] as? String == "translate this")
+        let sentContext = sent?["context"] as? [String: String]
+        #expect(sentContext == ["app": "Notes", "window": "Plans", "address": "", "selection": "hola"])
+    }
+
+    @Test func leavesTheContextOutWhenThereIsNone() async throws {
+        final class Seen: @unchecked Sendable { var bodies: [Data] = [] }
+        let seen = Seen()
+        let harness = try makeHarness { request in
+            seen.bodies.append(body(of: request))
+            return .init(body: sse([("done", #"{"first_token_seconds": null, "characters": 0}"#)]))
+        }
+        _ = try await collect(harness.client.stream("hi", context: nil))
+        _ = try await collect(harness.client.stream("hi", context: ScreenContext()))
+        #expect(seen.bodies.allSatisfy { String(data: $0, encoding: .utf8) == #"{"message":"hi"}"# })
+    }
+
     @Test func neverSendsAnOriginHeader() async throws {
         final class Seen: @unchecked Sendable { var origin: String? = "unset" }
         let seen = Seen()

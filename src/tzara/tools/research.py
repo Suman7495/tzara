@@ -144,6 +144,7 @@ class Researcher:
         prompts: Prompts,
         report: Callable[[str], None] | None = None,
         cancelled: Callable[[], bool] | None = None,
+        extras: list[Any] | None = None,
     ) -> None:
         """Create the researcher.
 
@@ -154,8 +155,12 @@ class Researcher:
             prompts: Where the evidence's notice and the progress texts come from.
             report: Told what is happening, so the user is not left looking at a spinner.
             cancelled: Returns True once the user has stopped the reply.
+            extras: More sources searched in the same round, such as Wikipedia: each has
+                ``applies(question)`` and ``hits(query)``. Their results rank below the general
+                search's, but fill in when that finds little.
         """
         self._settings = settings
+        self._extras = extras or []
         self._backend = backend
         self._reader = reader
         self._prompts = prompts
@@ -173,7 +178,8 @@ class Researcher:
         question = question.strip()
         keywords = PassagePicker.keywords(question)
         queries = self._queries(question, keywords)
-        candidates = self._rank(self._search(queries), SubjectFinder.addresses(question))
+        main, extra = self._search(queries, question)
+        candidates = self._rank(main, SubjectFinder.addresses(question), extra)
         if not candidates:
             raise WebError("The searches found no pages to read. Try different words.")
 
@@ -214,20 +220,32 @@ class Researcher:
             queries.append(f"{queries[0]} ({sites})")
         return queries
 
-    def _search(self, queries: list[str]) -> list[list[SearchHit]]:
-        """Run every query at the same time; a failed one gives no results."""
+    def _search(
+        self, queries: list[str], question: str
+    ) -> tuple[list[list[SearchHit]], list[list[SearchHit]]]:
+        """Run every query, and the extra sources, at the same time; a failure gives no results.
+
+        Returns:
+            The results of the general search's queries, and those of the extra sources.
+        """
         self._check()
         self._report(self._prompts.research_searching.format(queries=" · ".join(queries[:2])))
+        # The key words suit an API's own search better than a whole sentence does.
+        short_query = next((q for q in queries[1:] if "site:" not in q), queries[0])
+        sources = [(self._backend, query) for query in queries] + [
+            (extra, short_query) for extra in self._extras if extra.applies(question)
+        ]
 
-        def one(query: str) -> list[SearchHit]:
+        def one(source: tuple[Any, str]) -> list[SearchHit]:
+            backend, query = source
             try:
-                return self._backend.hits(query)
+                return list(backend.hits(query))
             except WebError as error:
                 logger.info("search %r found nothing: %s", query, error)
                 return []
 
-        results = self._gather(one, queries, good=bool)
-        return [found or [] for found in results]
+        results = [found or [] for found in self._gather(one, sources, good=bool)]
+        return results[: len(queries)], results[len(queries) :]
 
     def _gather(
         self, work: Callable[[Any], Any], items: list[Any], good: Callable[[Any], bool]
@@ -252,12 +270,19 @@ class Researcher:
         pool.shutdown(wait=False, cancel_futures=True)
         return [future.result() if future.done() else None for future in futures]
 
-    def _rank(self, results: list[list[SearchHit]], addresses: list[str]) -> list[_Candidate]:
+    def _rank(
+        self,
+        results: list[list[SearchHit]],
+        addresses: list[str],
+        extra: list[list[SearchHit]] | None = None,
+    ) -> list[_Candidate]:
         """Order pages by how many searches found them and how high, best first.
 
         A page several searches agree on is likelier to be right. Official, reference and
         documentation sites get a bonus, an address the user wrote goes first, and sites that
-        need a login are left out. One site cannot take every place.
+        need a login are left out. One site cannot take every place. Hits of the extra sources
+        (Wikipedia, GitHub) are scored by position only, so they fill in when the general search
+        finds little but never push its best pages out.
         """
         scores: dict[str, float] = defaultdict(float)
         first: dict[str, SearchHit] = {}
@@ -266,15 +291,19 @@ class Researcher:
             if key:
                 scores[key] += self._settings.address_bonus
                 first.setdefault(key, SearchHit("", url, ""))
-        for hits in results:
+        for hits, trusted in [(hits, True) for hits in results] + [
+            (hits, False) for hits in extra or []
+        ]:
             for position, hit in enumerate(hits):
                 key = self._key(hit.url)
                 if not key or self._skipped(self._host(hit.url)):
                     continue
                 scores[key] += len(hits) - position
                 if key not in first or not first[key].title:
-                    scores[key] += self._settings.authority_bonus * self._authority.level(hit.url)
-                if key not in first or not first[key].title:
+                    if trusted:
+                        scores[key] += self._settings.authority_bonus * self._authority.level(
+                            hit.url
+                        )
                     first[key] = hit
 
         chosen: list[_Candidate] = []
