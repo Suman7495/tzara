@@ -310,9 +310,9 @@ class ToolCallingFakeModel(RecordingFakeModel):
 class PromptAwareFakeModel(RecordingFakeModel):
     """Fake model that answers ``answer N``, or writes a summary when asked to.
 
-    Needs no script, so it copes with however many model calls DeepAgents makes
+    Needs no script, so it copes with however many model calls the agent makes
     in a turn. The summarization call is a single standalone prompt containing
-    ``SESSION INTENT`` (a heading of DeepAgents' summarization prompt). Ordinary
+    ``SESSION INTENT`` (a heading of the summarization prompt). Ordinary
     calls carry a system prompt and history, even when that history already
     holds a summary, so they get the next answer.
     """

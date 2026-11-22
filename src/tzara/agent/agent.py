@@ -430,7 +430,7 @@ class Tzara:
             logger.info("restored %d messages of the last conversation", len(restored))
 
     def _create_agent(self) -> None:
-        """Build the chat model and the DeepAgents graph around it."""
+        """Build the chat model and the agent graph around it."""
         self._cancel_requested = False
         self._chat_model = self._factory.create(self._model)
         self._agent = create_agent(
