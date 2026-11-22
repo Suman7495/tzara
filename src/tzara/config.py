@@ -26,14 +26,14 @@ class OllamaSettings:
 
     Attributes:
         num_ctx: Context window in tokens. Ollama's default of 4096 silently
-            truncates the start of the prompt once all DeepAgents tools are on.
+            truncates the start of the prompt once the tools and a long prompt are on.
         keep_alive: How long Ollama keeps the model loaded while idle. A model
             that has been unloaded costs several seconds to load again.
         reasoning: Whether thinking-capable models (e.g. Qwen3) think before
             answering. Off by default because it adds seconds to every reply.
         reserved_tokens: Part of ``num_ctx`` kept free for the system prompt,
             tool schemas and the model's reply. The rest is the budget for
-            conversation history: once history nears it, DeepAgents summarizes
+            conversation history: once history nears it, old turns are summarized
             older turns instead of letting Ollama silently truncate the prompt.
     """
 

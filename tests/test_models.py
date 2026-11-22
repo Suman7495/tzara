@@ -73,17 +73,6 @@ class TestContextBudget:
         )
         assert model.profile == {"max_input_tokens": 12288}
 
-    def test_deepagents_therefore_summarizes_relative_to_the_window(self):
-        """Without a profile DeepAgents waits until 170,000 tokens: far past num_ctx."""
-        from deepagents.middleware.summarization import compute_summarization_defaults
-
-        ollama = ModelFactory(OllamaSettings()).create("ollama:qwen3:8b")
-        defaults = compute_summarization_defaults(ollama)
-        assert defaults["trigger"] == ("fraction", 0.85)
-
-        bare = ChatOllama(model="qwen3:8b")
-        assert compute_summarization_defaults(bare)["trigger"] == ("tokens", 170000)
-
 
 class TestCloseConnection:
     def test_closes_the_ollama_http_client(self):
