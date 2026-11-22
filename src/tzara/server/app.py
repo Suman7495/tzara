@@ -19,10 +19,11 @@ from typing import Any, ClassVar
 import uvicorn
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, field_validator
 
 from tzara.agent.memory import ConversationMemory
 from tzara.agent.models import ModelCatalog
+from tzara.agent.screen import ScreenContext
 from tzara.config import ServerSettings, TzaraConfig
 from tzara.memory import PersonalMemory
 from tzara.server.files import NameStore, ServerInfo, ServerInfoFile, ServerPaths, TokenStore
@@ -41,10 +42,20 @@ from tzara.server.service import (
 logger = logging.getLogger(__name__)
 
 
+class ScreenBody(BaseModel):
+    """What the user was looking at, inside ``POST /v1/chat``. Every part is optional."""
+
+    app: str = Field(default="", max_length=500)
+    window: str = Field(default="", max_length=2000)
+    address: str = Field(default="", max_length=4000)
+    selection: str = Field(default="", max_length=200_000)
+
+
 class ChatRequest(BaseModel):
     """Body of ``POST /v1/chat``."""
 
     message: str
+    context: ScreenBody | None = None
 
     @field_validator("message")
     @classmethod
@@ -346,7 +357,8 @@ class TzaraServer:
                 loop.call_soon_threadsafe(events.put_nowait, event)
 
         try:
-            turn = self._service.start_turn(body.message, sink)
+            context = ScreenContext(**body.context.model_dump()) if body.context else None
+            turn = self._service.start_turn(body.message, sink, context)
         except ServiceNotReady as error:
             raise HTTPException(status_code=503, detail=str(error)) from error
         except ServiceBusy as error:

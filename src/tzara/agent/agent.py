@@ -24,6 +24,7 @@ from tzara.agent.memory import ConversationMemory, HistoryMessage
 from tzara.agent.models import ModelFactory
 from tzara.agent.personal import MemoryMiddleware
 from tzara.agent.routing import QuestionRules, ResearchRouter
+from tzara.agent.screen import ScreenBlock, ScreenContext
 from tzara.config import TzaraConfig
 from tzara.memory import PersonalMemory
 from tzara.tools.memory import MemoryTools
@@ -159,7 +160,7 @@ class Tzara:
         """The conversation this agent is part of."""
         return self._memory
 
-    def run(self, text: str) -> Generator[AgentEvent]:
+    def run(self, text: str, context: ScreenContext | None = None) -> Generator[AgentEvent]:
         """Answer one user message, as typed events in the order they happen.
 
         The message and reply are added to the conversation. Events from the model (pieces of
@@ -170,6 +171,8 @@ class Tzara:
 
         Args:
             text: The user's message.
+            context: What the user was looking at, to be put in front of the message for the
+                model. It is not part of what the user said: history shows ``text`` alone.
 
         Yields:
             :class:`AssistantDelta`, :class:`ToolStarted`, :class:`ToolCompleted` and
@@ -183,11 +186,16 @@ class Tzara:
 
         inbox: queue.Queue[AgentEvent | _Failure | None] = queue.Queue()
         self._activity.begin_turn()
-        self._activity.links.collect(text)  # an address the user typed is theirs to be repeated
+        shown_to_model = text
+        if context is not None and not context.empty and self._config.screen.enabled:
+            shown_to_model = ScreenBlock.wrap(context, text, self._config.screen)
+            self._activity.distrust()
+        # An address the user typed, or had selected, is theirs to be repeated.
+        self._activity.links.collect(shown_to_model)
         checked = _CheckedReply(LinkGuard(self._activity.links.trusts), started)
         self._activity.listen(inbox.put)
         stream = self._agent.stream_events(
-            {"messages": [{"role": "user", "content": text}]},
+            {"messages": [{"role": "user", "content": shown_to_model}]},
             {**self._memory.run_config, "callbacks": [self._activity]},
             version="v3",
         )
@@ -284,7 +292,7 @@ class Tzara:
         messages = (state.values or {}).get("messages", [])
         roles = {"human": "user", "ai": "assistant"}
         return [
-            HistoryMessage(roles[message.type], message.text)
+            HistoryMessage(roles[message.type], ScreenBlock.remove(message.text))
             for message in messages
             if message.type in roles and message.text.strip()
         ]
@@ -440,6 +448,7 @@ class Tzara:
                 web=self._config.web.enabled,
                 system=self._system_rules,
                 memory=self._personal is not None,
+                screen=self._config.screen.enabled,
             ),
             middleware=self._middleware(),
             checkpointer=self._memory.checkpointer,

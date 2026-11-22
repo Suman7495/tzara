@@ -42,6 +42,9 @@ final class ChatModel: ObservableObject {
     /// How many tools are running right now. The assistant can use several at once.
     private var runningTools = 0
     /// What the assistant is called.
+    /// What the user was looking at when the box opened, to go with their next message. They can
+    /// drop it before sending.
+    @Published private(set) var screen: ScreenContext?
     @Published private(set) var assistantName = "Tzara"
     @Published private(set) var isRenaming = false
     @Published var showingSettings = false
@@ -79,6 +82,13 @@ final class ChatModel: ObservableObject {
     /// How long a message waits for a model that is still loading before giving up.
     private static let loadWaitSeconds = 90
 
+    /// Sets what the user was looking at, shown above the input until it is sent or dropped.
+    func attach(_ context: ScreenContext?) {
+        screen = context.flatMap { $0.isEmpty ? nil : $0 }
+    }
+
+    func dropScreen() { screen = nil }
+
     func send() {
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard canSend, !text.isEmpty else { return }
@@ -93,11 +103,15 @@ final class ChatModel: ObservableObject {
         messages.append(reply)
         phase = .waiting
 
+        // The context belongs to this one message: later ones are answered from the conversation.
+        let context = screen
+        screen = nil
+
         replyTask = Task {
             var waited = 0
             while true {
                 do {
-                    for try await event in client.stream(text) {
+                    for try await event in client.stream(text, context: context) {
                         switch event {
                         case let .status(text):
                             activity = text

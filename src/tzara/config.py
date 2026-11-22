@@ -197,9 +197,11 @@ class WebSettings:
         search_attempts: Times a search is tried when the search engine does not answer.
         user_agent: Sent when fetching pages.
         region: The search engine's region, which decides the language of the results.
-        engines: Which engines ``ddgs`` asks, in order, as a comma-separated list. Its default,
-            all of them in turn, spends seconds on engines that do not answer from many networks
-            (DuckDuckGo's own page, Yandex): a fixed list of ones that do took 1-2 s instead of 7.
+        engines: The engines ``ddgs`` asks first, as a comma-separated list, before it falls back to
+            all of them. Its own "auto" spends seconds on engines that hang on many networks
+            (DuckDuckGo's page): measured here, Yahoo answered in about 1 s while Brave, Startpage
+            and Mojeek refused programs. Bing and Google are disabled by ``ddgs`` itself.
+        wikipedia_language: Which Wikipedia is asked (``en``, ``de``...).
         cache_seconds: How long a search result or a page is remembered, so a follow-up question
             on the same subject does not fetch it again.
         max_html_chars: Most HTML read from one page, so a huge or hostile page cannot stall it.
@@ -215,7 +217,8 @@ class WebSettings:
     search_attempts: int = 2
     user_agent: str = "Mozilla/5.0 (compatible; Tzara; +https://github.com/Suman7495/tzara)"
     region: str = "us-en"
-    engines: str = "bing,google,brave,yahoo,startpage"
+    engines: str = "yahoo,brave,startpage,mojeek"
+    wikipedia_language: str = "en"
     cache_seconds: float = 900.0
     max_html_chars: int = 1_000_000
 
@@ -513,6 +516,30 @@ class MemorySettings:
 
 
 @dataclass(frozen=True)
+class ScreenSettings:
+    """Settings for what the user was looking at, which the Mac app may send with a message.
+
+    Attributes:
+        enabled: Whether the server accepts and uses it.
+        max_selection_chars: Most selected text given to the model (the rest is cut).
+        max_field_chars: Longest app name, window title or address given to the model.
+    """
+
+    enabled: bool = True
+    max_selection_chars: int = 6000
+    max_field_chars: int = 300
+
+    def __post_init__(self) -> None:
+        """Check the limits.
+
+        Raises:
+            ConfigError: If a limit is not positive.
+        """
+        if min(self.max_selection_chars, self.max_field_chars) <= 0:
+            raise ConfigError("screen limits must be positive")
+
+
+@dataclass(frozen=True)
 class CLISettings:
     """Text shown by the command-line interface.
 
@@ -556,6 +583,7 @@ class TzaraConfig:
         system: Tools that open things and control media on the Mac.
         research: The ``research`` tool, which reads pages to answer bigger questions.
         memory: What Tzara remembers between conversations.
+        screen: What the user was looking at, sent by the Mac app.
         warmup_message: Throwaway message used to load the model and prime
             Ollama's prompt cache before the user's first message.
     """
@@ -571,6 +599,7 @@ class TzaraConfig:
     system: SystemSettings = field(default_factory=SystemSettings)
     research: ResearchSettings = field(default_factory=ResearchSettings)
     memory: MemorySettings = field(default_factory=MemorySettings)
+    screen: ScreenSettings = field(default_factory=ScreenSettings)
     warmup_message: str = "hi"
 
     @classmethod
@@ -581,7 +610,8 @@ class TzaraConfig:
         ``TZARA_OLLAMA_KEEP_ALIVE``, ``TZARA_OLLAMA_REASONING``,
         ``TZARA_OLLAMA_RESERVED_TOKENS``, ``TZARA_LOG_LEVEL``, ``TZARA_LOG_FILE``,
         ``TZARA_SERVER_PORT``, ``TZARA_DATA_DIR``, ``TZARA_RELEASE_URL``,
-        ``TZARA_APP_DIR``, ``TZARA_WEB_SEARCH``, ``TZARA_SYSTEM_TOOLS`` and ``TZARA_MEMORY``.
+        ``TZARA_APP_DIR``, ``TZARA_WEB_SEARCH``, ``TZARA_SYSTEM_TOOLS``, ``TZARA_MEMORY`` and
+        ``TZARA_SCREEN``.
 
         Args:
             env: Variables to read. Defaults to ``os.environ``.
@@ -631,6 +661,10 @@ class TzaraConfig:
             memory=replace(
                 defaults.memory,
                 enabled=reader.boolean("MEMORY", defaults.memory.enabled),
+            ),
+            screen=replace(
+                defaults.screen,
+                enabled=reader.boolean("SCREEN", defaults.screen.enabled),
             ),
         )
 

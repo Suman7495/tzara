@@ -35,6 +35,7 @@ struct SettingsView: View {
                 }
             }
             Section("Memory") { memorySection }
+            Section("What Tzara can see") { screenSection }
             Section {
                 LabeledContent("Hotkey") { hotkeyStatus }
                 LabeledContent("Server") { serverStatus }
@@ -49,6 +50,7 @@ struct SettingsView: View {
         .scrollContentBackground(.hidden)
         .onAppear {
             settings.load()
+            settings.refreshScreenPermission()
             nameDraft = assistantName
             hotkeyActive = hotkeyIsActive()
         }
@@ -170,6 +172,25 @@ struct SettingsView: View {
         alert.addButton(withTitle: "Cancel")
         NSApplication.shared.activate(ignoringOtherApps: true)
         if alert.runModal() == .alertFirstButtonReturn { settings.uninstall() }
+    }
+
+    // MARK: - What Tzara can see
+
+    @ViewBuilder private var screenSection: some View {
+        Toggle("Use the app and selected text in front", isOn: $settings.useScreen)
+            .help("When you open the box, Tzara notes which app, window and selected text you were in, so you can say \u{201C}translate this\u{201D}.")
+        Text(
+            "The box shows what it will send, and you can remove it. "
+                + "Nothing is read from password managers or password fields."
+        )
+        .font(.caption).foregroundStyle(.secondary)
+        if settings.useScreen, !settings.screenAllowed {
+            HStack {
+                Text("Needs the Accessibility permission to read selected text and window titles.")
+                    .font(.caption).foregroundStyle(.orange)
+                Button("Open Settings", action: SystemSettings.openAccessibility)
+            }
+        }
     }
 
     // MARK: - Updates

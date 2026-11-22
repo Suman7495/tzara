@@ -21,8 +21,9 @@ import time
 import unicodedata
 from collections.abc import Callable
 from dataclasses import dataclass
+from html import unescape
 from typing import Any, ClassVar, Protocol
-from urllib.parse import parse_qsl, urlencode, urljoin, urlparse, urlsplit, urlunsplit
+from urllib.parse import parse_qsl, quote, urlencode, urljoin, urlparse, urlsplit, urlunsplit
 
 import httpx
 from langchain_core.tools import BaseTool
@@ -252,25 +253,92 @@ class DuckDuckGoBackend:
         )
 
     def _ddgs_search(self, query: str, limit: int) -> list[SearchHit]:
-        """Ask DuckDuckGo through the ``ddgs`` package, imported on first use."""
+        """Ask the ``ddgs`` package (imported on first use): the fast engines, then all of them."""
         from ddgs import DDGS
 
+        error: Exception | None = None
+        for engines in (self._settings.engines, "auto"):
+            try:
+                found = DDGS(timeout=int(self._settings.search_timeout_seconds)).text(
+                    query, region=self._settings.region, max_results=limit, backend=engines
+                )
+            except Exception as failure:
+                # ddgs reports "nothing found" as an exception: try the next set of engines.
+                error = failure
+                continue
+            if found:
+                return [
+                    SearchHit(item.get("title", ""), item.get("href", ""), item.get("body", ""))
+                    for item in found
+                ]
+        if error is not None and "no results" not in str(error).lower():
+            raise error
+        return []
+
+
+class WikipediaBackend:
+    """Searches Wikipedia through its own public API: free, no key, built for programs.
+
+    Besides being a good source for "what is" and "who is", it answers when the general search
+    engines refuse programs for a moment.
+    """
+
+    URL: ClassVar[str] = "https://{language}.wikipedia.org/w/api.php"
+    TAGS: ClassVar[re.Pattern[str]] = re.compile(r"<[^>]+>")
+    LIMIT: ClassVar[int] = 3
+
+    def __init__(self, settings: WebSettings, client: httpx.Client | None = None) -> None:
+        """Create the backend.
+
+        Args:
+            settings: Web settings.
+            client: HTTP client. Replaced in tests.
+        """
+        self._settings = settings
+        self._client = client or httpx.Client(
+            timeout=settings.search_timeout_seconds, headers={"User-Agent": settings.user_agent}
+        )
+
+    @staticmethod
+    def applies(_question: str) -> bool:
+        """Every question may be about something Wikipedia knows."""
+        return True
+
+    def hits(self, query: str) -> list[SearchHit]:
+        """Return the best articles for ``query``.
+
+        Raises:
+            WebError: If the search failed or found nothing.
+        """
+        language = self._settings.wikipedia_language
         try:
-            found = DDGS(timeout=int(self._settings.search_timeout_seconds)).text(
-                query,
-                region=self._settings.region,
-                max_results=limit,
-                backend=self._settings.engines,
+            response = self._client.get(
+                self.URL.format(language=language),
+                params={
+                    "action": "query",
+                    "list": "search",
+                    "srsearch": query,
+                    "srlimit": self.LIMIT,
+                    "format": "json",
+                    "utf8": 1,
+                },
             )
-        except Exception as error:
-            # ddgs reports "nothing found" as an exception; that is an answer, not a failure.
-            if "no results" in str(error).lower():
-                return []
-            raise
-        return [
-            SearchHit(item.get("title", ""), item.get("href", ""), item.get("body", ""))
-            for item in found
+            response.raise_for_status()
+            items = response.json().get("query", {}).get("search", [])
+        except (httpx.HTTPError, ValueError) as error:
+            raise WebError(f"Wikipedia did not answer: {error.__class__.__name__}") from error
+        found = [
+            SearchHit(
+                Sanitizer.clean(item["title"]),
+                f"https://{language}.wikipedia.org/wiki/{quote(item['title'].replace(' ', '_'))}",
+                Sanitizer.clean(unescape(self.TAGS.sub("", item.get("snippet", "")))),
+            )
+            for item in items
+            if item.get("title")
         ]
+        if not found:
+            raise WebError("Wikipedia has nothing on that.")
+        return found
 
 
 class UrlGuard:
@@ -598,7 +666,10 @@ class WebTools:
             return []
         backend = overrides.get("backend") or DuckDuckGoBackend(settings)
         reader = overrides.get("reader") or PageReader(settings, config.prompts)
-        researcher = Researcher(config.research, backend, reader, config.prompts, report, cancelled)
+        extras: list[Any] = overrides.get("extras") or [WikipediaBackend(settings)]
+        researcher = Researcher(
+            config.research, backend, reader, config.prompts, report, cancelled, extras
+        )
         return [
             ReadWebpage(reader, config.prompts.read_webpage_tool),
             Research(researcher, config.prompts.research_tool),

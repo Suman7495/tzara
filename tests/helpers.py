@@ -100,6 +100,7 @@ class FakeAgent:
         self.personal = personal
         self.events: list[str] = []
         self.messages: list[str] = []
+        self.contexts: list[Any] = []
         type(self).created.append(self)
 
     @classmethod
@@ -121,9 +122,6 @@ class FakeAgent:
 
     def cancel(self) -> None:
         self.events.append("cancel")
-
-    def cancel_suggestions(self) -> None:
-        self.events.append("cancel_suggestions")
 
     def suggest(self) -> list[str]:
         return ["Tell me more", "Why?"]
@@ -176,6 +174,7 @@ class StreamingFakeAgent:
         self.personal = personal
         self.events: list[str] = []
         self.messages: list[str] = []
+        self.contexts: list[Any] = []
         self.cancelled = threading.Event()
         type(self).created.append(self)
 
@@ -201,9 +200,6 @@ class StreamingFakeAgent:
         self.events.append("suggest")
         return list(type(self).follow_ups)
 
-    def cancel_suggestions(self) -> None:
-        self.events.append("cancel_suggestions")
-
     def warm_up(self) -> None:
         self.events.append("warm_up")
         gate = type(self).warm_up_gate
@@ -213,8 +209,9 @@ class StreamingFakeAgent:
         if error is not None:
             raise error
 
-    def run(self, text: str) -> Iterator[AgentEvent]:
+    def run(self, text: str, context: Any = None) -> Iterator[AgentEvent]:
         """Typed events, as the real agent gives them: tools first, then the reply."""
+        self.contexts.append(context)
         characters = 0
         for status in type(self).statuses:
             yield ToolStarted("fake_tool", status)

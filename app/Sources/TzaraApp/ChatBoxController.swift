@@ -11,6 +11,7 @@ final class ChatBoxController {
     /// Whether *we* have opened the box and not yet closed it. Asking the window
     /// (`panel.isVisible`) is not a reliable way to know this.
     private(set) var isOpen = false
+    private let screenPreferences = ScreenPreferences()
 
     /// What the menu-bar icon should show about the reply.
     enum Indicator { case idle, working, ready }
@@ -39,6 +40,8 @@ final class ChatBoxController {
     }
 
     func show(settings: Bool = false) {
+        // Before the box takes its place: the app the user was in is still the one in front.
+        if !isOpen { model.attach(screenPreferences.enabled ? ScreenReader().read() : nil) }
         let cursor = NSEvent.mouseLocation
         let frame = placement.frame(
             cursor: cursor,

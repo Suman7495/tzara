@@ -211,6 +211,25 @@ class TestStatusAndModels:
         assert all(set(model) == {"id", "description"} for model in ollama)
 
 
+class TestScreenContext:
+    def test_the_context_reaches_the_agent(self, build, agents):
+        client, _, _ = build()
+        body = {"message": "translate this", "context": {"app": "Notes", "selection": "hola"}}
+        assert client.post("/v1/chat", headers=AUTH, json=body).status_code == 200
+        context = agents.created[0].contexts[0]
+        assert (context.app, context.selection, context.window) == ("Notes", "hola", "")
+
+    def test_a_message_without_context_has_none(self, build, agents):
+        client, _, _ = build()
+        client.post("/v1/chat", headers=AUTH, json={"message": "hi"})
+        assert agents.created[0].contexts == [None]
+
+    def test_a_context_with_a_wrong_type_is_refused(self, build):
+        client, _, _ = build()
+        body = {"message": "hi", "context": {"selection": 5}}
+        assert client.post("/v1/chat", headers=AUTH, json=body).status_code == 422
+
+
 class TestChat:
     def post(self, client, message="hi", **kwargs):
         return client.post("/v1/chat", headers=AUTH, json={"message": message}, **kwargs)

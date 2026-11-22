@@ -52,12 +52,18 @@ class Activity(BaseCallbackHandler):
 
     @property
     def read_the_web(self) -> bool:
-        """Whether a tool that reads web pages has run since :meth:`begin_turn`.
+        """Whether this turn has seen text that may not be the user's own words.
 
-        Text from a web page is untrusted, so what the agent does afterwards in that turn (such
-        as remembering something) must not be taken as the user's wish.
+        Set when a tool that reads web pages has run, or when text from the user's screen came
+        with the message (:meth:`distrust`). Such text can hold instructions, so what the agent
+        does afterwards in that turn (such as remembering something) must not be taken as the
+        user's wish.
         """
         return self._read_the_web
+
+    def distrust(self) -> None:
+        """Note that text from the user's screen came with this turn: it may hold instructions."""
+        self._read_the_web = True
 
     def begin_turn(self) -> None:
         """Forget what the last reply did: a new reply starts with nothing read or seen."""
