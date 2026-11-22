@@ -1,4 +1,5 @@
 import logging
+import sys
 import warnings
 from dataclasses import replace
 from types import SimpleNamespace
@@ -26,7 +27,12 @@ EXPECTED_TOOLS = {
     "task",
     "write_todos",
     "calculator",
+    "web_search",
+    "read_webpage",
 }
+
+# Only offered on a Mac, so the expected set depends on where the tests run.
+MAC_TOOLS = {"open_app", "open_website", "open_path", "control_media"}
 
 # Cold start costs about 5 ms per tool-description character on a local model.
 # Fail loudly if the prompt grows back towards DeepAgents' ~19k-character default.
@@ -152,7 +158,9 @@ class TestPromptSentToTheModel:
         return model
 
     def test_every_tool_is_available(self, seen):
-        assert {tool_name(tool) for tool in seen.bound_tools} == EXPECTED_TOOLS
+        assert {tool_name(tool) for tool in seen.bound_tools} == EXPECTED_TOOLS | (
+            MAC_TOOLS if sys.platform == "darwin" else set()
+        )
 
     def test_tool_descriptions_stay_within_budget(self, seen):
         total = sum(len(tool_description(tool)) for tool in seen.bound_tools)

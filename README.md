@@ -6,9 +6,9 @@
 
 Tzara is an open-source, **local-first personal AI agent** built on **LangChain's DeepAgents framework** and designed for developers who want to learn and experiment with AI agents in Python.
 
-It's fully local, supports multiple models, comes with a calculator tool, and is extensible with custom tools.
+It's fully local, supports multiple models, can search the web, open apps and sites and control your music, and is extensible with custom tools.
 
-**No cloud. Complete data privacy.**
+**No cloud. Complete data privacy:** the model and your chats stay on your machine. The one exception is web search, which sends the search query out; turn it off with `TZARA_WEB_SEARCH=false`.
 
 
 ## Features
@@ -16,6 +16,8 @@ It's fully local, supports multiple models, comes with a calculator tool, and is
 - [x] **Lightweight & low footprint** — Small Python core with fast startup and low memory usage, runs comfortably on a personal laptop
 - [x] **Multi-Model Support** — Switch between Ollama, Anthropic, OpenAI, and Google models at runtime
 - [x] **Conversation Memory** — Remembers earlier messages across turns, interrupts and model switches
+- [x] **Web search** — Searches the web and reads pages, then gives a short summary with its source (on by default; DuckDuckGo, or Google through Gemini)
+- [x] **Open things and control music** — Opens apps (including Terminal), websites, files and folders, and plays, pauses or skips music and sets the volume (macOS; it cannot run commands)
 - [x] **Local API** — Background HTTP server with streaming replies (loopback-only, token-protected)
 - [x] **macOS app** — Tap Control+Option anywhere for a small chat box right at your pointer
 
@@ -117,6 +119,9 @@ Defaults live in [`TzaraConfig`](src/tzara/config.py). Override with environment
 | `TZARA_OLLAMA_KEEP_ALIVE` | `30m` | How long Ollama keeps the model loaded while idle; longer avoids reload waits but holds 5-8 GB |
 | `TZARA_OLLAMA_REASONING` | `false` | Let thinking models such as Qwen3 think first; slower |
 | `TZARA_OLLAMA_RESERVED_TOKENS` | `4096` | Part of the window kept for the prompt and reply; the rest is the history budget |
+| `TZARA_WEB_SEARCH` | `true` | Let Tzara search the web and read pages. This is the one feature that sends something off your machine (the search query, and page requests); set `false` to keep everything local |
+| `TZARA_WEB_SEARCH_PROVIDER` | `duckduckgo` | `duckduckgo` needs nothing. `gemini` searches Google through the Gemini API and needs `GOOGLE_API_KEY` |
+| `TZARA_SYSTEM_TOOLS` | `true` | Let Tzara open apps, sites, files and folders and control music (macOS only). It never runs commands or opens scripts and installers; set `false` to turn it off |
 | `TZARA_LOG_LEVEL` | `INFO` | `DEBUG`, `INFO`, `WARNING`, `ERROR` or `CRITICAL` |
 | `TZARA_LOG_FILE` | platform default | `~/Library/Logs/tzara/tzara.log`, `~/.local/state/tzara/tzara.log`, or `%LOCALAPPDATA%\tzara\Logs\tzara.log` |
 | `TZARA_SERVER_PORT` | `8927` | Server port, on `127.0.0.1` |
@@ -151,7 +156,7 @@ class Weather(BaseTool):
 ```
 Register it in `Tzara.__init__` (`src/tzara/agent/agent.py`):
 ```python
-self._tools = [Calculator(), Weather()]
+self._tools = [Calculator(), *WebTools.create(self._config), Weather()]
 ```
 Tzara decides when to use it. Add a test in `tests/` and run `make check`.
 
@@ -168,7 +173,19 @@ make app                          # build the app yourself (needs the Command Li
 
 Skip the login service while developing: it would hold port 8927 (set `TZARA_SERVER_PORT` to run a second server). `tzara setup` fetches the app matching the installed version, so it needs a published release; `make app` builds your own.
 
-**Releasing.** Once: run `app/scripts/create_signing_identity.sh` and save the two GitHub secrets it prints (`TZARA_SIGNING_P12`, `TZARA_SIGNING_PASSWORD`). Every app is then signed with the same certificate, so users keep their Input Monitoring permission across updates; the workflow refuses to publish an unsigned app. For each release: bump `version` in `pyproject.toml`, then `git tag vX.Y.Z && git push origin vX.Y.Z`. The workflow checks the tag matches, tests and builds the app, and publishes `Tzara.app.zip` with its checksum. Running `make app` after the script above signs your local builds with the same certificate.
+**Checks (CI).** Every push to `main` and every pull request runs `make check` (ruff, pylint, mypy, pytest with coverage) on Python 3.11 and 3.12, confirms `requirements.lock` matches `pyproject.toml`, and runs the macOS app's tests. A weekly job tries the newest dependency versions the ranges allow, so upstream breakage shows up early. Run `make check` yourself before pushing.
+
+**Releasing.** Once: run `app/scripts/create_signing_identity.sh` and save the two GitHub secrets it prints (`TZARA_SIGNING_P12`, `TZARA_SIGNING_PASSWORD`). Every app is then signed with the same certificate, so users keep their Input Monitoring permission across updates; the workflow refuses to publish an unsigned app.
+
+**To release, merge `develop` into `main`. There is nothing else to do.** The merge starts the release workflow, which picks the next version (the latest release plus one patch, so `0.1.2` becomes `0.1.3`), runs `make check` and the app tests, builds and signs the app, writes the version into `pyproject.toml`, commits that to `main` and publishes `Tzara.app.zip` with its checksum under a new `v0.1.3` tag. Installed copies then update themselves within a few hours. Follow it under the repo's *Actions* tab.
+
+- **Bigger steps:** put `[minor]` or `[major]` in any commit message in the merge (`0.1.9` → `0.2.0`, `0.9.0` → `1.0.0`). Or run the workflow by hand from the *Actions* tab and choose the step.
+- **No release for non-product changes:** a merge that only touches docs, tests or CI is not released. Anything under `src/` or `app/`, or `install.sh`, `pyproject.toml` or `requirements.lock`, is.
+- **Retry:** if a release fails (checks, build or signing), nothing is published and `main` is left as it was; fix it and merge again, or rerun the workflow from the *Actions* tab.
+- **`develop` catches up by itself:** after every merge to `main` (released or not), the workflow merges `main` into `develop`, so it always has the release commit. Commits pushed to `develop` in the meantime are kept. Locally, just `git pull` before you push, as always. If `develop` and `main` ever conflict, that step fails with the commands to fix it by hand. Don't edit the `version` line in `pyproject.toml` yourself: it is the one line both sides change.
+- **Protected branches:** the workflow pushes the version commit to `main` and the catch-up merge to `develop`, so if you require pull requests on either, let the GitHub Actions bot bypass that rule.
+
+Running `make app` after the signing script signs your local builds with the same certificate.
 
 ## Project Structure
 
@@ -180,11 +197,12 @@ tzara/
 │   ├── cli/              # `tzara` command, chat loop, slash commands
 │   ├── server/           # Local HTTP server (FastAPI) and its background manager
 │   ├── installer/        # `tzara setup`: Ollama, login service, app download
-│   └── tools/            # Calculator, and where custom tools go
+│   └── tools/            # Calculator, web search, Mac tools (open, media), and where custom tools go
 ├── install.sh            # the one-line installer
+├── scripts/              # helpers the release workflow uses (next version, set version)
 ├── app/                  # macOS app (Swift): hotkey, chat box, settings
 ├── tests/                # pytest suite (runs offline)
-├── .github/workflows/    # CI
+├── .github/workflows/    # CI (every push/PR), weekly dependency check, release (on a merge to `main`)
 ├── CLAUDE.md             # Developer guide
 ├── pyproject.toml        # Dependency ranges, linter and test configuration
 └── requirements.lock     # Exact tested dependency versions

@@ -169,6 +169,117 @@ class InstallerSettings:  # pylint: disable=too-many-instance-attributes
 
 
 @dataclass(frozen=True)
+class WebSettings:  # pylint: disable=too-many-instance-attributes
+    """Settings for searching the web and reading pages.
+
+    This is the one feature that sends something off the machine: the search
+    query goes to the search provider, and pages are fetched from their sites.
+    The model and the conversation stay local.
+
+    Attributes:
+        enabled: Whether the agent gets the web tools at all.
+        provider: ``duckduckgo`` (no account or key) or ``gemini`` (Google Search
+            through the Gemini API, needs the key named by ``gemini_key_variable``).
+        max_results: Search results returned to the model.
+        max_page_chars: Most text of one page given to the model (about four
+            characters per token, so the context window is not filled by one page).
+        max_download_bytes: Most bytes read from one page.
+        max_redirects: Redirects followed for one page, each checked again.
+        timeout_seconds: Network timeout for a search or a page.
+        user_agent: Sent when fetching pages.
+        gemini_model: Gemini model used to search when ``provider`` is ``gemini``.
+        gemini_key_variable: Environment variable holding the Gemini API key.
+        gemini_url: Gemini API endpoint; ``{model}`` is replaced by ``gemini_model``.
+    """
+
+    PROVIDERS: ClassVar[tuple[str, ...]] = ("duckduckgo", "gemini")
+
+    enabled: bool = True
+    provider: str = "duckduckgo"
+    max_results: int = 5
+    max_page_chars: int = 6000
+    max_download_bytes: int = 2_000_000
+    max_redirects: int = 3
+    timeout_seconds: float = 15.0
+    user_agent: str = "Mozilla/5.0 (compatible; Tzara; +https://github.com/Suman7495/tzara)"
+    gemini_model: str = "gemini-3.5-flash"
+    gemini_key_variable: str = "GOOGLE_API_KEY"
+    gemini_url: str = (
+        "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+    )
+
+    def __post_init__(self) -> None:
+        """Check the provider and the limits.
+
+        Raises:
+            ConfigError: If ``provider`` is unknown or a limit is not positive.
+        """
+        if self.provider not in self.PROVIDERS:
+            raise ConfigError(
+                f"web search provider must be one of {', '.join(self.PROVIDERS)}, "
+                f"got {self.provider!r}"
+            )
+        limits = (
+            self.max_results,
+            self.max_page_chars,
+            self.max_download_bytes,
+            self.timeout_seconds,
+        )
+        if any(limit <= 0 for limit in limits) or self.max_redirects < 0:
+            raise ConfigError("web search limits must be positive")
+
+
+@dataclass(frozen=True)
+class SystemSettings:
+    """Settings for the tools that act on the Mac (open things, control media).
+
+    Attributes:
+        enabled: Whether the agent gets these tools. They only exist on macOS.
+        command_timeout: Seconds a launched program may run before it is stopped.
+        max_name_chars: Longest application name accepted.
+        open_program: Program that opens apps, addresses, files and folders.
+        script_program: Program that runs AppleScript, used for media and volume.
+        media_players: Music apps the media tool may control, in order of preference.
+        blocked_suffixes: Kinds of item never opened, because opening them runs a program.
+    """
+
+    enabled: bool = True
+    command_timeout: float = 10.0
+    max_name_chars: int = 100
+    open_program: str = "open"
+    script_program: str = "osascript"
+    media_players: tuple[str, ...] = ("Music", "Spotify")
+    blocked_suffixes: tuple[str, ...] = (
+        ".app",
+        ".command",
+        ".sh",
+        ".zsh",
+        ".bash",
+        ".tool",
+        ".terminal",
+        ".scpt",
+        ".scptd",
+        ".workflow",
+        ".action",
+        ".pkg",
+        ".mpkg",
+        ".dmg",
+        ".jar",
+        ".webloc",
+        ".inetloc",
+    )
+
+    def __post_init__(self) -> None:
+        """Check the limits.
+
+        Raises:
+            ConfigError: If a limit is not positive.
+        """
+        if self.command_timeout <= 0 or self.max_name_chars <= 0:
+            raise ConfigError("system tool limits must be positive")
+
+
+@dataclass(frozen=True)
 class CLISettings:  # pylint: disable=too-many-instance-attributes
     """Text shown by the command-line interface.
 
@@ -190,7 +301,7 @@ class CLISettings:  # pylint: disable=too-many-instance-attributes
 
 
 @dataclass(frozen=True)
-class TzaraConfig:
+class TzaraConfig:  # pylint: disable=too-many-instance-attributes
     """Top-level configuration.
 
     Attributes:
@@ -201,6 +312,8 @@ class TzaraConfig:
         log: Logging settings.
         server: Settings for the local HTTP server.
         installer: Where ``tzara setup`` fetches and installs things.
+        web: Web search and page reading.
+        system: Tools that open things and control media on the Mac.
         harness_providers: Providers the DeepAgents harness profile is
             registered for.
         warmup_message: Throwaway message used to load the model and prime
@@ -214,6 +327,8 @@ class TzaraConfig:
     log: LogSettings = field(default_factory=LogSettings)
     server: ServerSettings = field(default_factory=ServerSettings)
     installer: InstallerSettings = field(default_factory=InstallerSettings)
+    web: WebSettings = field(default_factory=WebSettings)
+    system: SystemSettings = field(default_factory=SystemSettings)
     harness_providers: tuple[str, ...] = ("ollama", "anthropic", "openai", "google_genai")
     warmup_message: str = "hi"
 
@@ -224,8 +339,9 @@ class TzaraConfig:
         Recognised variables: ``TZARA_MODEL``, ``TZARA_OLLAMA_NUM_CTX``,
         ``TZARA_OLLAMA_KEEP_ALIVE``, ``TZARA_OLLAMA_REASONING``,
         ``TZARA_OLLAMA_RESERVED_TOKENS``, ``TZARA_LOG_LEVEL``, ``TZARA_LOG_FILE``,
-        ``TZARA_SERVER_PORT``, ``TZARA_DATA_DIR``, ``TZARA_RELEASE_URL`` and
-        ``TZARA_APP_DIR``.
+        ``TZARA_SERVER_PORT``, ``TZARA_DATA_DIR``, ``TZARA_RELEASE_URL``,
+        ``TZARA_APP_DIR``, ``TZARA_WEB_SEARCH``, ``TZARA_WEB_SEARCH_PROVIDER``
+        and ``TZARA_SYSTEM_TOOLS``.
 
         Args:
             env: Variables to read. Defaults to ``os.environ``.
@@ -263,6 +379,15 @@ class TzaraConfig:
                 defaults.installer,
                 release_url=reader.text("RELEASE_URL", defaults.installer.release_url),
                 app_dir=reader.path("APP_DIR", defaults.installer.app_dir),
+            ),
+            web=replace(
+                defaults.web,
+                enabled=reader.boolean("WEB_SEARCH", defaults.web.enabled),
+                provider=reader.text("WEB_SEARCH_PROVIDER", defaults.web.provider).lower(),
+            ),
+            system=replace(
+                defaults.system,
+                enabled=reader.boolean("SYSTEM_TOOLS", defaults.system.enabled),
             ),
         )
 
