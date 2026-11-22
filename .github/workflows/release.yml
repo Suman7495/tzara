@@ -1,35 +1,90 @@
 name: Release
 
-# Pushing a tag such as v0.1.0 publishes the macOS app for that version. `tzara setup` downloads
-# the app that matches the Tzara version it is running, so the app and the server always agree.
+# Merging to main releases a new version by itself. Nothing to do by hand.
 #
-#   0. once: app/scripts/create_signing_identity.sh, then save the two GitHub secrets it names
-#   1. bump `version` in pyproject.toml
-#   2. git tag v0.1.0 && git push origin v0.1.0
+#   - The version is the latest release plus one patch. Put [minor] or [major] in any commit
+#     message of the merge for a bigger step (0.1.9 -> 0.2.0, 0.9.0 -> 1.0.0).
+#   - A merge that changes nothing the product is made of (only docs, tests, CI) is not released.
+#   - The workflow writes the new version into pyproject.toml, builds and signs the app, commits
+#     that version to main and publishes the release, whose tag points at that commit.
+#     `tzara setup` downloads the app matching the Tzara version it runs, so they always agree.
+#   - Run it by hand (Actions tab) to release without a code change, or to retry a failed run.
+#   - Once: app/scripts/create_signing_identity.sh, then save the two GitHub secrets it names.
+#   - Needs to push to main: if main is protected, allow the GitHub Actions bot to bypass that.
 
 on:
   push:
-    tags: ["v*"]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      level:
+        description: How big a step from the latest release
+        type: choice
+        options: [patch, minor, major]
+        default: patch
 
 permissions:
   contents: write
 
+concurrency:
+  group: release
+  cancel-in-progress: false
+
 jobs:
+  plan:
+    name: Decide whether and what to release
+    runs-on: ubuntu-latest
+    outputs:
+      release: ${{ steps.decide.outputs.release }}
+      version: ${{ steps.decide.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: decide
+        env:
+          BEFORE: ${{ github.event.before }}
+          EVENT: ${{ github.event_name }}
+          CHOSEN_LEVEL: ${{ inputs.level }}
+        run: |
+          level=patch
+          release=true
+          if [ "$EVENT" = "workflow_dispatch" ]; then
+            level="$CHOSEN_LEVEL"
+          elif [ -n "$BEFORE" ] && [ "${BEFORE//0/}" != "" ] && git cat-file -e "$BEFORE^{commit}" 2>/dev/null; then
+            # What this push brought in; docs, tests and CI alone are not a new version.
+            if ! git diff --name-only "$BEFORE" HEAD | grep -Eq '^(src/|app/|install\.sh$|pyproject\.toml$|requirements\.lock$)'; then
+              release=false
+              echo "Nothing the product is made of changed: no release."
+            fi
+            messages=$(git log --format=%B "$BEFORE..HEAD")
+            if grep -qF '[major]' <<<"$messages"; then level=major
+            elif grep -qF '[minor]' <<<"$messages"; then level=minor
+            fi
+          fi
+          latest=$(git tag -l 'v[0-9]*.[0-9]*.[0-9]*' | sed 's/^v//' | sort -V | tail -n 1)
+          [ -n "$latest" ] || latest=$(python3 -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")
+          version=$(scripts/next_version.sh "$latest" "$level")
+          echo "latest $latest, $level step, next $version, release: $release"
+          echo "release=$release" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
   app:
-    name: Build and publish the macOS app
+    name: Build and publish v${{ needs.plan.outputs.version }}
+    needs: plan
+    if: needs.plan.outputs.release == 'true'
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: main
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: The tag must match the version in pyproject.toml
-        run: |
-          version=$(python -c "import tomllib; print(tomllib.load(open('pyproject.toml', 'rb'))['project']['version'])")
-          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
-            echo "Tag $GITHUB_REF_NAME does not match version $version in pyproject.toml" >&2
-            exit 1
-          fi
+      - name: Write the version, so the package and the app carry it
+        run: scripts/set_version.sh "${{ needs.plan.outputs.version }}"
+      - run: make install
+      - run: make check
       - run: make app-test
       - name: Import the signing certificate
         env:
@@ -40,7 +95,42 @@ jobs:
       - run: make app-release
         env:
           TZARA_REQUIRE_SIGNING: "1"
+      # Only after everything above passed, so a failed build never leaves a bumped main behind.
+      - name: Commit the version to main
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -am "release: v${{ needs.plan.outputs.version }}"
+          git push origin HEAD:main
       - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" app/build/Tzara.app.zip app/build/Tzara.app.zip.sha256 --generate-notes
+        run: gh release create "v${{ needs.plan.outputs.version }}" app/build/Tzara.app.zip app/build/Tzara.app.zip.sha256 --target "$(git rev-parse HEAD)" --generate-notes
+
+  sync:
+    name: Bring develop up to date with main
+    needs: [plan, app]
+    # Also after a merge that was not released (docs only), and not after a failed release.
+    if: always() && needs.plan.result == 'success' && (needs.app.result == 'success' || needs.app.result == 'skipped')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: develop
+          fetch-depth: 0
+      # A merge, never a rewrite: commits pushed to develop in the meantime are kept.
+      - name: Merge main into develop
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git fetch origin main
+          if git merge-base --is-ancestor origin/main HEAD; then
+            echo "develop already contains main."
+            exit 0
+          fi
+          if ! git merge --no-edit origin/main; then
+            git merge --abort
+            echo "::error::develop and main conflict. Merge main into develop by hand: git checkout develop && git pull && git merge origin/main"
+            exit 1
+          fi
+          git push origin HEAD:develop

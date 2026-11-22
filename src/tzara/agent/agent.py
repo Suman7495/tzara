@@ -17,6 +17,8 @@ from tzara.agent.models import ModelFactory
 from tzara.agent.summaries import SummaryRunFilter
 from tzara.config import TzaraConfig
 from tzara.tools.calculator import Calculator
+from tzara.tools.system import SystemTools
+from tzara.tools.web import WebTools
 
 if TYPE_CHECKING:
     from langgraph.stream.run_stream import GraphRunStream
@@ -24,7 +26,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-class Tzara:
+class Tzara:  # pylint: disable=too-many-instance-attributes
     """Conversational agent with calculator, file, todo and subagent tools.
 
     Wraps a DeepAgents graph and exposes what the CLI needs: streaming a reply,
@@ -50,7 +52,9 @@ class Tzara:
         self._config = config or TzaraConfig()
         self._model = model or self._config.model
         self._memory = memory or ConversationMemory()
-        self._tools = [Calculator()]
+        system_tools = SystemTools.create(self._config)
+        self._system_rules = bool(system_tools)
+        self._tools = [Calculator(), *WebTools.create(self._config), *system_tools]
         self._harness = HarnessConfigurator(self._config.prompts, self._config.harness_providers)
         self._factory = ModelFactory(self._config.ollama)
         self._stream: GraphRunStream | None = None
@@ -196,7 +200,10 @@ class Tzara:
         self._agent = create_deep_agent(
             model=self._chat_model,
             tools=self._tools,
-            system_prompt=self._config.prompts.rendered_system(),
+            system_prompt=self._config.prompts.rendered_system(
+                web=self._config.web.enabled,
+                system=self._system_rules,
+            ),
             middleware=self._harness.middleware(),
             checkpointer=self._memory.checkpointer,
             interrupt_on={},

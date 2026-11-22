@@ -58,6 +58,7 @@ src/tzara/
 │   └── client.py    # ServerClient: health and status checks
 ├── installer/       # `tzara setup`/`uninstall`: OllamaSetup, AppInstaller, ServiceInstaller/LaunchAgent, Installer
 └── tools/
+    ├── system.py      # open_app, open_website, open_path, control_media (macOS)
     └── calculator.py  # Calculator tool and the safe ExpressionEvaluator behind it
 app/                 # macOS app (Swift package): hotkey, chat box, settings; see "macOS App" below
 tests/               # pytest suite; helpers.py holds the fake console, agent and models
@@ -194,9 +195,45 @@ whose tag equals the package version (sha256 checked). `Installer` talks to Prot
 tests use fakes and never touch the machine. A missing release is a warning, not a failure
 (`AppNotPublished`). `ShutdownAwareServer.handle_exit` must let the process exit with status 0:
 uvicorn re-raises the signal, which launchd would count as a crash and restart.
-Release: bump `version`, tag `vX.Y.Z`, push; `.github/workflows/release.yml` runs `make app-release`.
+Release: merging to `main` releases, with no manual step. `.github/workflows/release.yml` (every push to `main`,
+or run by hand) works out the next version in `plan`: latest `v*` tag plus a patch (`[minor]`/`[major]` in a
+commit message of the push, or the `level` input when run by hand, picks a bigger step; `scripts/next_version.sh`).
+A push that only changes docs, tests or CI is skipped. `app` then writes the version (`scripts/set_version.sh`),
+runs `make check`, the app tests and the signed `make app-release`, and only then commits the version to
+`main` and runs `gh release create --target <that commit>`, so a failed build leaves `main` untouched. The bot's
+push does not retrigger workflows. The `sync` job then merges `main` into `develop` (a merge, so new develop
+commits survive; it runs after unreleased merges too, not after a failed release; a conflict fails the job with
+instructions, most likely from a hand-edited version line). `main` and `develop` must let the Actions bot push. The tag is what `install.sh` and `tzara setup` use, so the tagged commit
+must carry the matching `pyproject.toml` version: never tag by hand.
 Never run `tzara setup`/`uninstall` against default paths while developing: they stop the
 running server and app. Use `TZARA_DATA_DIR`, `TZARA_APP_DIR`, `TZARA_SERVER_PORT`.
+
+## Mac tools
+
+`tools/system.py`: `open_app`, `open_website`, `open_path`, `control_media` (`SystemTools.create`; macOS
+only, off with `TZARA_SYSTEM_TOOLS=false`; settings in `SystemSettings`, prompts in `Prompts`, with
+`system_rules` added to the system prompt). They launch and press play; **none runs a command the model
+wrote**. Terminal is just `open_app("Terminal")`. Programs run through `CommandRunner` (no shell, timeout),
+so tests use a fake and never open anything.
+- `AppOpener` rejects names with `/`, newlines or a leading `-`; `WebsiteOpener` takes only http(s);
+  `PathOpener` needs an absolute path, resolves symlinks first, and refuses `blocked_suffixes` (`.app`,
+  `.command`, `.sh`, `.pkg`, `.webloc`...) because opening those runs code.
+- `MediaController` uses AppleScript, asks whether a player is running before talking to it (so it never
+  launches one), and clamps volume 0-100. First use may show a macOS "control Music/Spotify" prompt.
+- Sending, deleting, closing tabs and shutdown need a confirmation flow first (`interrupt_on`); not built.
+
+## Web search
+
+`tools/web.py`: `web_search` and `read_webpage` (read-only; `WebTools.create`, off with `TZARA_WEB_SEARCH=false`;
+settings in `WebSettings`, prompts in `Prompts`). Backends: `DuckDuckGoBackend` (`ddgs`, no key, imported on
+first use) and `GeminiBackend` (Google Search grounding over REST, key from `GOOGLE_API_KEY`, sent in a header).
+Google's own Custom Search JSON API is closed to new customers and ends 2027-01-01, so it is not used.
+- **Page text is untrusted.** It is prefixed with `Prompts.untrusted_page_notice`, the system prompt gets
+  `web_rules`, and the tools can only read: keep it that way until actions need confirmation.
+- **`UrlGuard`** allows only http(s) hosts that resolve to public addresses, re-checked at every redirect
+  (the client never follows redirects itself), so the agent cannot reach Tzara's own server or the LAN.
+- Pages are cut to `max_page_chars` (the context window is small); `PageText` prefers `main`/`article` and
+  drops long runs of short lines (menus, language lists).
 
 ## Signing and updates
 
