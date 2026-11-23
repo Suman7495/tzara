@@ -126,6 +126,15 @@ class ModelFactory:
         )
 
     @staticmethod
+    def is_closed(model: BaseChatModel) -> bool:
+        """Whether the model's HTTP client has been closed, so it can send nothing more.
+
+        Only Ollama models have a client of this kind; any other model is never reported closed.
+        """
+        http_client = getattr(getattr(model, "_client", None), "_client", None)
+        return bool(getattr(http_client, "is_closed", False))
+
+    @staticmethod
     def close_connection(model: BaseChatModel) -> None:
         """Abort any in-flight request by closing the model's HTTP client.
 

@@ -187,6 +187,8 @@ pygments==2.21.0
     # via
     #   pytest
     #   rich
+pypdf==7.1.1
+    # via tzara (pyproject.toml)
 pytest==9.2.0
     # via
     #   tzara (pyproject.toml)

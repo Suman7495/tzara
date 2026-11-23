@@ -513,3 +513,41 @@ class TestFreeApis:
             backend = WikipediaBackend(WebSettings(), self.client(lambda _r, r=response: r))
             with pytest.raises(WebError):
                 backend.hits("q")
+
+
+class TestParsingInParallel:
+    def test_two_pages_are_never_parsed_at_the_same_moment(self, monkeypatch):
+        """lxml aborts the whole process when threads parse at once; extraction takes turns."""
+        import threading
+        import time
+
+        import trafilatura
+
+        inside = 0
+        most = 0
+        guard = threading.Lock()
+
+        def slow_extract(*_args, **_kwargs):
+            nonlocal inside, most
+            with guard:
+                inside += 1
+                most = max(most, inside)
+            time.sleep(0.01)
+            with guard:
+                inside -= 1
+            return "Some readable text about the subject."
+
+        monkeypatch.setattr(trafilatura, "extract", slow_extract)
+        monkeypatch.setattr(trafilatura, "extract_metadata", lambda *_a, **_k: None)
+
+        threads = [
+            threading.Thread(
+                target=lambda: [PageExtractor.extract("<html></html>") for _ in range(5)]
+            )
+            for _ in range(6)
+        ]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        assert most == 1

@@ -523,11 +523,65 @@ class ScreenSettings:
         enabled: Whether the server accepts and uses it.
         max_selection_chars: Most selected text given to the model (the rest is cut).
         max_field_chars: Longest app name, window title or address given to the model.
+        max_page_chars: Most text of the page or document behind the context given to the model.
+        page_words: Words in a message that mean it is about the page or document the user has
+            open ("summarize this page"). Only then is the page read, and only if nothing is
+            selected: a selection is what the user means.
+        document_suffixes: File types read from disk when the context is a local document. Types
+            that hold secrets (keys, ``.env``) are not in the list, and nor are hidden files.
+        max_file_bytes: Largest file read.
     """
 
     enabled: bool = True
     max_selection_chars: int = 6000
     max_field_chars: int = 300
+    max_page_chars: int = 5000
+    page_words: tuple[str, ...] = (
+        "this page",
+        "this article",
+        "this site",
+        "this website",
+        "this link",
+        "this document",
+        "this file",
+        "this pdf",
+        "this paper",
+        "this post",
+        "the page",
+        "the article",
+        "the document",
+        "summarize",
+        "summarise",
+        "summary",
+        "tl;dr",
+        "key points",
+        "what is this",
+        "what does this",
+        "what's this",
+        "translate",
+        "explain this",
+        "proofread",
+    )
+    document_suffixes: tuple[str, ...] = (
+        ".txt",
+        ".md",
+        ".markdown",
+        ".rst",
+        ".csv",
+        ".json",
+        ".yaml",
+        ".yml",
+        ".toml",
+        ".html",
+        ".htm",
+        ".log",
+        ".py",
+        ".js",
+        ".ts",
+        ".swift",
+        ".pdf",
+    )
+    max_file_bytes: int = 5_000_000
 
     def __post_init__(self) -> None:
         """Check the limits.
@@ -535,7 +589,13 @@ class ScreenSettings:
         Raises:
             ConfigError: If a limit is not positive.
         """
-        if min(self.max_selection_chars, self.max_field_chars) <= 0:
+        limits = (
+            self.max_selection_chars,
+            self.max_field_chars,
+            self.max_page_chars,
+            self.max_file_bytes,
+        )
+        if min(limits) <= 0:
             raise ConfigError("screen limits must be positive")
 
 

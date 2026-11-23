@@ -89,17 +89,19 @@ class ResearchRouter(AgentMiddleware):
     ) -> Any:
         """Call the research tool for the user's message if it needs the web, else carry on."""
         last = request.messages[-1] if request.messages else None
-        # A message that comes with the user's screen is about that text; the model may still
-        # call research itself if it needs to.
+        # A message that comes with new text from the user's screen is about that text; the model
+        # may still call research itself if it needs to. The app and window alone change nothing:
+        # the rules look at what the user wrote.
+        written = ScreenBlock.remove(last.text) if last is not None else ""
         if (
             last is not None
             and last.type == "human"
-            and not last.text.startswith(ScreenBlock.START)
-            and self._rules.needs_sources(last.text)
+            and not ScreenBlock.brings_text(last.text)
+            and self._rules.needs_sources(written)
         ):
             call = {
                 "name": self._tool,
-                "args": {"question": last.text.strip()},
+                "args": {"question": written.strip()},
                 "id": f"{self.ROUTED}{uuid.uuid4().hex}",
             }
             return AIMessage(content="", tool_calls=[call])

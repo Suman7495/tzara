@@ -23,6 +23,7 @@ final class ChatBoxPanel: NSPanel {
         isOpaque = false
         backgroundColor = .clear
         hasShadow = true
+        alphaValue = 0.95  // a little see-through, to match the thin material inside
         hidesOnDeactivate = false
         isMovableByWindowBackground = true
         isReleasedWhenClosed = false

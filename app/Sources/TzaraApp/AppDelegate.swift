@@ -35,6 +35,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let settings = arguments.contains("--settings")
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { chatBox.show(settings: settings) }
         }
+        // `--demo-screen` shows a made-up screen context, to check how the chip and buttons look.
+        if arguments.contains("--demo-screen") {
+            let expanded = arguments.contains("--expand-screen")
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { chatBox.attachDemoContext(expanded: expanded) }
+        }
+        // `--probe-screen SECONDS` waits, then says in numbers (never the text) what Tzara reads in
+        // the app that is in front, and quits: switch to the app, select something, and look.
+        if let flag = arguments.firstIndex(of: "--probe-screen") {
+            let seconds = flag + 1 < arguments.count ? Double(arguments[flag + 1]) ?? 8 : 8
+            DispatchQueue.main.asyncAfter(deadline: .now() + seconds) {
+                print(ScreenReader().report(for: NSWorkspace.shared.frontmostApplication))
+                NSApplication.shared.terminate(nil)
+            }
+        }
         // `--press-paste` sends Command+V to the box a moment after it opens (for checking paste).
         if arguments.contains("--press-paste") {
             DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { chatBox.pressPaste() }
