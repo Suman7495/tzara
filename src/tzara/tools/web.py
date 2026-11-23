@@ -399,6 +399,10 @@ class PageExtractor:
     kept menus and lost pages built from many small elements.
     """
 
+    # lxml (under trafilatura) aborts the whole process now and then when several threads parse
+    # at once, and research reads its pages together. Downloading stays parallel; parsing, about
+    # thirty milliseconds a page, takes turns.
+    PARSING: ClassVar[threading.Lock] = threading.Lock()
     ESCAPED: ClassVar[re.Pattern[str]] = re.compile(r"\\([\\`*_{}\[\]()#+.!|<>~-])")
     FENCE: ClassVar[re.Pattern[str]] = re.compile(
         r"^```[^\n]*\n(.*?)^```[ \t]*$", re.DOTALL | re.MULTILINE
@@ -415,9 +419,14 @@ class PageExtractor:
         Raises:
             WebError: If the page has no readable text.
         """
-        import trafilatura
-
         html = html[:max_chars]
+        with cls.PARSING:
+            return cls._extract(html)
+
+    @classmethod
+    def _extract(cls, html: str) -> PageContent:
+        """:meth:`extract` for one page at a time."""
+        import trafilatura
 
         markdown = trafilatura.extract(
             html,

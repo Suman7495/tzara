@@ -12,6 +12,7 @@ from langchain_ollama import ChatOllama
 from helpers import PromptAwareFakeModel, RecordingFakeModel, fake_creator
 from tzara.agent import Tzara
 from tzara.agent.memory import ConversationMemory, HistoryMessage
+from tzara.agent.models import ModelFactory
 from tzara.config import TzaraConfig
 
 EXPECTED_TOOLS = {
@@ -388,3 +389,50 @@ class TestSpentEvidence:
         agent._drop_spent_evidence()
         messages = agent._agent.get_state(agent.memory.run_config).values["messages"]
         assert [m.text for m in messages if m.type == "tool"] == [note]
+
+
+class TestClosedConnection:
+    @staticmethod
+    def counting(agent):
+        """Count how often the agent builds a new graph and model connection."""
+        built = []
+        original = agent._create_agent
+
+        def create():
+            built.append(1)
+            original()
+
+        agent._create_agent = create
+        return built
+
+    def test_a_message_after_a_stop_gets_a_fresh_connection(self):
+        agent, _ = agent_with_fake_model("one", "two")
+        built = self.counting(agent)
+        agent.cancel()  # a stop that was not followed by interrupt()
+        assert "".join(agent.handle("hello")) == "one"
+        assert built == [1]
+
+    def test_no_new_connection_when_none_was_closed(self):
+        agent, _ = agent_with_fake_model("one")
+        built = self.counting(agent)
+        list(agent.handle("hello"))
+        assert built == []
+
+    def test_the_warm_up_after_a_stop_also_reopens(self):
+        agent, _ = agent_with_fake_model("one")
+        agent.cancel()
+        agent.warm_up()
+        assert agent._connection_closed is False
+
+    def test_a_connection_closed_by_anything_else_is_noticed_and_replaced(self):
+        agent = Tzara(config=TzaraConfig())  # a real Ollama client; nothing is sent
+        http_client(agent).close()  # closed without cancel(), as nothing flagged it
+        assert agent._factory.is_closed(agent._chat_model)
+        agent._reopen_if_closed()
+        assert not agent._factory.is_closed(agent._chat_model)
+        assert not http_client(agent).is_closed
+
+    def test_other_models_are_never_reported_closed(self):
+        from helpers import RecordingFakeModel
+
+        assert ModelFactory.is_closed(RecordingFakeModel.replying("x")) is False

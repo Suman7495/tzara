@@ -34,6 +34,10 @@ final class SettingsModel: ObservableObject {
             screenAllowed = ScreenReader.isAllowed
         }
     }
+    /// The language the Translate button translates into; empty means the language of the Mac.
+    @Published var translateInto: String {
+        didSet { screenPreferences.translateInto = translateInto }
+    }
     /// Whether macOS has given the permission that lets Tzara read selected text and window titles.
     @Published private(set) var screenAllowed = ScreenReader.isAllowed
 
@@ -72,6 +76,7 @@ final class SettingsModel: ObservableObject {
         autoUpdate = preferences.autoUpdate
         self.screenPreferences = screenPreferences
         useScreen = screenPreferences.enabled
+        translateInto = screenPreferences.translateInto
         self.currentVersion = currentVersion ?? AppVersion("0")!
     }
 

@@ -81,6 +81,24 @@ class TestRouter:
         reply, _ = self.route(HumanMessage(content=wrapped))
         assert reply.tools == ["research"]
 
+    def test_the_window_alone_does_not_stop_research(self):
+        wrapped = ScreenBlock.wrap(
+            ScreenContext("Notes", "Plans"), "who won the match on Sunday?", ScreenSettings()
+        )
+        reply, _ = self.route(HumanMessage(content=wrapped))
+        (call,) = reply.tool_calls
+        assert call["args"] == {"question": "who won the match on Sunday?"}
+
+    def test_a_selection_that_was_already_given_does_not_stop_research_either(self):
+        wrapped = ScreenBlock.wrap(
+            ScreenContext("Notes", selection="old words"),
+            "who won the match on Sunday?",
+            ScreenSettings(),
+            selection_unchanged=True,
+        )
+        reply, _ = self.route(HumanMessage(content=wrapped))
+        assert reply.tool_calls
+
     def test_other_messages_go_to_the_model_with_its_tools(self):
         reply, _ = self.route(HumanMessage(content="hi"))
         assert reply.tools == ["research"]

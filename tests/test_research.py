@@ -239,3 +239,25 @@ class TestExtraSources:
 
         r, _ = self.make({"*": HITS}, Failing([]))
         assert "docs.example.org" in r.research("how to enable cors")
+
+
+class TestGraceStartsWithTheGeneralSearch:
+    def test_a_fast_extra_source_does_not_cut_off_a_slower_general_search(self):
+        import time
+
+        class Slowish(FakeBackend):
+            def hits(self, query):
+                time.sleep(0.3)
+                return super().hits(query)
+
+        backend = Slowish({"*": HITS})
+        wiki = FakeExtra([SearchHit("Wiki", "https://en.wikipedia.org/wiki/X", "x")])
+        r = Researcher(
+            ResearchSettings(grace_seconds=0.05),
+            backend,
+            FakeReader(PAGES),
+            Prompts(),
+            extras=[wiki],
+        )
+        text = r.research("how to enable cors")
+        assert "docs.example.org" in text and "wikipedia.org" in text

@@ -15,21 +15,21 @@ from typing import TYPE_CHECKING, Any
 from langchain.agents import create_agent
 from langchain.agents.middleware import SummarizationMiddleware
 from langchain_core._api import LangChainBetaWarning
-from langchain_core.messages import AIMessage, ToolMessage
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
 from tzara.agent.activity import Activity
-from tzara.agent.events import AgentEvent, AssistantDelta, RunCompleted
+from tzara.agent.events import AgentEvent, AssistantDelta, Progress, RunCompleted
 from tzara.agent.links import LinkGuard
 from tzara.agent.memory import ConversationMemory, HistoryMessage
 from tzara.agent.models import ModelFactory
 from tzara.agent.personal import MemoryMiddleware
 from tzara.agent.routing import QuestionRules, ResearchRouter
-from tzara.agent.screen import ScreenBlock, ScreenContext
+from tzara.agent.screen import ScreenBlock, ScreenContext, ScreenPage
 from tzara.config import TzaraConfig
 from tzara.memory import PersonalMemory
 from tzara.tools.memory import MemoryTools
 from tzara.tools.system import SystemTools
-from tzara.tools.web import WebTools
+from tzara.tools.web import PageReader, WebTools
 
 if TYPE_CHECKING:
     from langgraph.stream.run_stream import GraphRunStream
@@ -128,10 +128,15 @@ class Tzara:
         system_tools = SystemTools.create(self._config)
         self._system_rules = bool(system_tools)
         self._personal = personal
+        reader = PageReader(self._config.web, self._config.prompts)
         web_tools = WebTools.create(
             self._config,
             report=self._activity.report,
             cancelled=lambda: self._cancel_requested,
+            reader=reader,
+        )
+        self._screen_page = ScreenPage(
+            reader if self._config.web.enabled else None, self._config.screen
         )
         memory_tools = MemoryTools.create(
             personal,
@@ -142,6 +147,10 @@ class Tzara:
         self._tools = [*web_tools, *system_tools, *memory_tools]
         self._stream: GraphRunStream | None = None
         self._cancel_requested = False
+        # Set when the model's connection has been closed to stop a reply: it cannot be used again.
+        self._connection_closed = False
+        self._last_selection = ""
+        self._selection_conversation: int | None = None
 
         # The v3 streaming protocol is flagged as beta, and langchain_core
         # re-enables the warning on import, so it would be printed into the chat.
@@ -178,6 +187,7 @@ class Tzara:
             :class:`AssistantDelta`, :class:`ToolStarted`, :class:`ToolCompleted` and
             :class:`Progress` events as they happen, then :class:`RunCompleted`.
         """
+        self._reopen_if_closed()
         self._cancel_requested = False
         logger.info("turn started: %d characters", len(text))
         logger.debug("user message: %s", text)
@@ -188,8 +198,17 @@ class Tzara:
         self._activity.begin_turn()
         shown_to_model = text
         if context is not None and not context.empty and self._config.screen.enabled:
-            shown_to_model = ScreenBlock.wrap(context, text, self._config.screen)
-            self._activity.distrust()
+            page, page_note = "", ""
+            if self._screen_page.wanted(text, context):
+                yield Progress(self._config.prompts.screen_reading)
+                page, page_note = self._screen_page.read(context)
+            unchanged = self._selection_seen(context)
+            shown_to_model = ScreenBlock.wrap(
+                context, text, self._config.screen, page, page_note, unchanged
+            )
+            if ScreenBlock.brings_text(shown_to_model):
+                # New text from the screen may hold instructions: nothing is remembered on its say.
+                self._activity.distrust()
         # An address the user typed, or had selected, is theirs to be repeated.
         self._activity.links.collect(shown_to_model)
         checked = _CheckedReply(LinkGuard(self._activity.links.trusts), started)
@@ -307,6 +326,7 @@ class Tzara:
         Raises:
             Exception: Whatever the model client raises if it cannot be reached.
         """
+        self._reopen_if_closed()
         started = time.monotonic()
         with self._memory.scratch() as run_config:
             self._agent.invoke(
@@ -327,6 +347,7 @@ class Tzara:
         agent cannot be used again until :meth:`interrupt` rebuilds it.
         """
         self._cancel_requested = True
+        self._connection_closed = True
         self._factory.close_connection(self._chat_model)
 
     def interrupt(self) -> None:
@@ -343,6 +364,32 @@ class Tzara:
             stream.abort()
 
         self._create_agent()
+
+    def _selection_seen(self, context: ScreenContext) -> bool:
+        """Whether this selection was already given to the model in this conversation.
+
+        The context goes with every message, and a selection can stay for many of them: it is
+        given once, then described as unchanged.
+        """
+        conversation = self._memory.conversation_id
+        if conversation != self._selection_conversation:
+            self._selection_conversation, self._last_selection = conversation, ""
+        seen = bool(context.selection) and context.selection == self._last_selection
+        self._last_selection = context.selection
+        return seen
+
+    def _reopen_if_closed(self) -> None:
+        """Build a fresh model connection if the last one was closed to stop a reply.
+
+        :meth:`interrupt` does this, but a stop that arrives while a reply is finishing can close
+        the connection without it, and then every later message failed with "Cannot send a
+        request, as the client has been closed" until the server restarted.
+        """
+        # Checked directly as well as noted by cancel(): whatever closed it, the next message must
+        # not be left to fail with it. Restarting the app does not help, as the server keeps it.
+        if self._connection_closed or self._factory.is_closed(self._chat_model):
+            logger.info("the model connection was closed; opening a new one")
+            self._create_agent()
 
     def _middleware(self) -> list[Any]:
         """What runs around each model call: summarizing old turns, and the memory block."""
@@ -403,7 +450,8 @@ class Tzara:
 
         The answer has been written from it. Left in, every later message makes the model read
         thousands of tokens of old search results again before it can start: "thanks" took
-        sixteen seconds. The answer itself stays.
+        sixteen seconds. The answer itself stays. So does the text of a page that came with a
+        message about "this page", for the same reason.
         """
         try:
             state = self._agent.get_state(self._memory.run_config)
@@ -423,6 +471,16 @@ class Tzara:
                 self._agent.update_state(
                     self._memory.run_config, {"messages": spent}, as_node="tools"
                 )
+            # The same for the text of a page that came with a message.
+            pages = [
+                HumanMessage(content=ScreenBlock.forget_page(message.text), id=message.id)
+                for message in (state.values or {}).get("messages", [])
+                if message.type == "human" and ScreenBlock.forget_page(message.text) != message.text
+            ]
+            if pages:
+                self._agent.update_state(
+                    self._memory.run_config, {"messages": pages}, as_node="model"
+                )
         except Exception:
             logger.warning("could not drop the spent search results", exc_info=True)
 
@@ -440,6 +498,7 @@ class Tzara:
     def _create_agent(self) -> None:
         """Build the chat model and the agent graph around it."""
         self._cancel_requested = False
+        self._connection_closed = False
         self._chat_model = self._factory.create(self._model)
         self._agent = create_agent(
             model=self._chat_model,

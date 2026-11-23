@@ -45,6 +45,11 @@ final class ChatModel: ObservableObject {
     /// What the user was looking at when the box opened, to go with their next message. They can
     /// drop it before sending.
     @Published private(set) var screen: ScreenContext?
+    /// True when macOS has not allowed Tzara to read selected text, so only the app name came.
+    @Published private(set) var screenNeedsPermission = false
+    /// Whether the chip is opened to show more of what is selected.
+    @Published var screenExpanded = false
+    private var follow = ScreenFollow()
     @Published private(set) var assistantName = "Tzara"
     @Published private(set) var isRenaming = false
     @Published var showingSettings = false
@@ -82,12 +87,52 @@ final class ChatModel: ObservableObject {
     /// How long a message waits for a model that is still loading before giving up.
     private static let loadWaitSeconds = 90
 
-    /// Sets what the user was looking at, shown above the input until it is sent or dropped.
-    func attach(_ context: ScreenContext?) {
-        screen = context.flatMap { $0.isEmpty ? nil : $0 }
+    /// Sets what the user was looking at when the box opened, shown above the input until it is
+    /// sent or dropped.
+    func attach(_ context: ScreenContext?, needsPermission: Bool = false) {
+        follow.start(with: context)
+        screen = follow.current
+        screenNeedsPermission = screen != nil && needsPermission
     }
 
-    func dropScreen() { screen = nil }
+    /// Follows the app in front while the box is open, also while a reply is being written and
+    /// after it: when the user selects something else, or moves to another window, the chip
+    /// changes with it. What the user removed stays away until it changes. Nothing changes when
+    /// nothing could be read.
+    func refresh(_ context: ScreenContext?, needsPermission: Bool) {
+        guard follow.follow(context) else { return }
+        screen = follow.current
+        screenNeedsPermission = needsPermission
+    }
+
+    func dropScreen() {
+        follow.drop()
+        screen = nil
+        screenExpanded = false
+    }
+
+    /// What the one-word buttons work on: what the user has in front of them if there is
+    /// something, else the assistant's last answer. `nil` while there is nothing to work on.
+    var actionTarget: QuickAction.Target? {
+        if screen?.actionable == true { return .screen }
+        guard let last = messages.last, last.role == .assistant, !last.text.isEmpty else { return nil }
+        return .reply
+    }
+
+    /// Which of those it is, in words, shown beside the buttons so it is never a surprise.
+    var actionTargetName: String {
+        switch actionTarget {
+        case .screen: screen?.selection.isEmpty == false ? "the selection" : "this page"
+        case .reply: "the last answer"
+        case nil: ""
+        }
+    }
+
+    /// Sends a one-word action, as if the matching sentence had been typed.
+    func perform(_ action: QuickAction) {
+        guard phase == .idle, !isRenaming, let target = actionTarget else { return }
+        deliver(action.prompt(translateInto: ScreenPreferences().translateInto, on: target))
+    }
 
     func send() {
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -104,8 +149,8 @@ final class ChatModel: ObservableObject {
         phase = .waiting
 
         // The context belongs to this one message: later ones are answered from the conversation.
-        let context = screen
-        screen = nil
+        // What Tzara is aware of goes with every message, and stays in the box afterwards.
+        let context = follow.current
 
         replyTask = Task {
             var waited = 0

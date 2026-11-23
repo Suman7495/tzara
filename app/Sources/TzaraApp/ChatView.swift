@@ -33,14 +33,22 @@ struct ChatView: View {
             } else {
                 transcript
                 if let notice = model.notice { noticeBar(notice) }
-                if let screen = model.screen { screenChip(screen) }
+                contextTray
                 Divider()
                 inputBar
             }
         }
         .frame(width: Self.size.width, height: Self.size.height)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).strokeBorder(.separator))
+        // A thin material lets what is behind show through a little, for a liquid feel; the light
+        // edge gives it a glassy rim.
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .strokeBorder(
+                    LinearGradient(
+                        colors: [.white.opacity(0.28), .white.opacity(0.06)],
+                        startPoint: .top, endPoint: .bottom),
+                    lineWidth: 1))
         .onChange(of: model.focusRequest) { _ in inputFocused = true }
         .onExitCommand(perform: onClose)  // the Escape key
     }
@@ -164,33 +172,138 @@ struct ChatView: View {
 
     private func noticeBar(_ text: String) -> some View {
         Text(text)
-            .font(.callout)
+            .font(.caption)
             .foregroundStyle(.secondary)
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, 14)
-            .padding(.vertical, 8)
-            .background(.quaternary)
+            .padding(.vertical, 6)
+            .background(Color.primary.opacity(0.06))
     }
 
     // MARK: - What Tzara can see
 
-    /// What will be sent with the next message, so nothing goes out that the user cannot see.
-    private func screenChip(_ context: ScreenContext) -> some View {
+    /// One tidy tray above the input: what Tzara can see (so nothing goes out unseen) and the
+    /// one-word actions. With something on screen it is a single card holding both; with only
+    /// the last answer to work on, it is just the row of buttons.
+    @ViewBuilder private var contextTray: some View {
+        // The card stays while a reply is written and after it: it is what Tzara is aware of.
+        // The buttons wait until the reply is finished.
+        let showActions = model.phase == .idle && model.actionTarget != nil
+        if let context = model.screen {
+            VStack(alignment: .leading, spacing: 8) {
+                contextLine(context)
+                if model.screenExpanded { contextDetails(context) }
+                if model.screenNeedsPermission { permissionNote }
+                if showActions { actionRow }
+            }
+            .padding(10)
+            .background(Color.primary.opacity(0.07), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .strokeBorder(Color.primary.opacity(0.08)))
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+        } else if showActions {
+            actionRow
+                .padding(.horizontal, 14)
+                .padding(.vertical, 8)
+        }
+    }
+
+    private func contextLine(_ context: ScreenContext) -> some View {
         HStack(spacing: 6) {
-            Image(systemName: "text.viewfinder")
-            Text(context.summary).lineLimit(1)
-            Spacer(minLength: 4)
-            Button(action: model.dropScreen) { Image(systemName: "xmark.circle.fill") }
+            // The whole line opens and closes the details; only the cross removes it.
+            Button {
+                withAnimation(.easeOut(duration: 0.15)) { model.screenExpanded.toggle() }
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "text.viewfinder")
+                    Text(context.summary).lineLimit(1)
+                    Image(systemName: "chevron.right")
+                        .font(.caption2)
+                        .rotationEffect(.degrees(model.screenExpanded ? 90 : 0))
+                    Spacer(minLength: 4)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help(model.screenExpanded ? "Hide the details" : "Show more of what Tzara can see")
+            Button(action: model.dropScreen) { Image(systemName: "xmark") }
                 .buttonStyle(.plain)
                 .help("Don't send this with the message")
                 .accessibilityLabel("Remove what Tzara can see")
         }
         .font(.callout)
         .foregroundStyle(.secondary)
-        .padding(.horizontal, 14)
-        .padding(.vertical, 6)
-        .background(.quaternary)
-        .help("Sent with your next message, so you can say \u{201C}this\u{201D} or \u{201C}it\u{201D}")
+    }
+
+    /// The window, the address and the selected text, which scrolls when it is long.
+    private func contextDetails(_ context: ScreenContext) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            if !context.window.isEmpty { detailRow("Window", context.window) }
+            if !context.address.isEmpty { detailRow("Address", context.address) }
+            if !context.selection.isEmpty {
+                ScrollView {
+                    Text(context.selection)
+                        .font(.callout)
+                        .foregroundStyle(.primary)
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(8)
+                }
+                .frame(height: Self.selectionHeight(for: context.selection))
+                .background(Color.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            } else if context.window.isEmpty && context.address.isEmpty {
+                Text("Only the name of the app is known.").font(.caption).foregroundStyle(.secondary)
+            }
+        }
+        .transition(.opacity)
+    }
+
+    /// How tall the selected text's area is: as much as the text needs, up to a limit, past which
+    /// it scrolls. Fixed rather than flexible because the conversation above would squeeze it.
+    private static func selectionHeight(for text: String) -> CGFloat {
+        let lines = text.split(separator: "\n", omittingEmptySubsequences: false)
+            .reduce(0) { $0 + max(1, ($1.count + 39) / 40) }
+        return min(130, 22 + CGFloat(lines) * 18)
+    }
+
+    private func detailRow(_ name: String, _ value: String) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 6) {
+            Text(name).font(.caption).foregroundStyle(.secondary).frame(width: 52, alignment: .leading)
+            Text(value).font(.caption).lineLimit(2).truncationMode(.middle).textSelection(.enabled)
+        }
+    }
+
+    /// Without this the selected text silently never arrives, and nothing says why.
+    private var permissionNote: some View {
+        HStack(spacing: 6) {
+            Text("Selected text needs the Accessibility permission.").foregroundStyle(.orange)
+            Button("Allow\u{2026}", action: SystemSettings.openAccessibility)
+                .buttonStyle(.link)
+        }
+        .font(.caption)
+    }
+
+    /// The one-word actions. Each sends an ordinary message.
+    private var actionRow: some View {
+        HStack(spacing: 5) {
+            Text("On \(model.actionTargetName):")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            ForEach(QuickAction.allCases, id: \.label) { action in
+                Button(action.label) { model.perform(action) }
+                    .buttonStyle(.plain)
+                    .font(.caption)
+                    .lineLimit(1)
+                    .fixedSize()
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(Color.primary.opacity(0.09), in: Capsule())
+            }
+            Spacer(minLength: 0)
+        }
+        .help(model.actionTarget == .reply ? "These work on the last answer" : "These work on what Tzara can see")
     }
 
     // MARK: - Input line

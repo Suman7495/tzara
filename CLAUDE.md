@@ -270,18 +270,68 @@ What the user was looking at (app, window title, page address or document path, 
 not the server (it runs without a screen session): `ScreenReader` (Accessibility API) when the box opens, because the
 box is non-activating and the app the user was in is still in front. Off until the user turns it on in Settings (macOS
 asks for Accessibility; without it only the app name is read). The box shows a chip with exactly what will be sent and
-the user can remove it; it goes with that one message only.
+the user can remove it. It is live and permanent while the box is open: it stays during and after a reply and goes with
+every message (`ScreenFollow`: only what the user removed stays away until it changes), so Tzara always knows what window
+the user is in. The server gives a selection to the model once and then calls it "the same as in the earlier message"
+(`Tzara._selection_seen`) so the conversation does not fill with copies.
 - Sent as `context` in `POST /v1/chat`; `agent/screen.py` (`ScreenBlock`) writes it in front of the user's message as a
   block marked as data, so the stored message carries it (prompt cache stays valid) and `Tzara.history()` removes it
   for display. `ConversationLog` records only what the user typed.
 - **It is untrusted text** (selected text may come from a web page or an email): the block says so, fields are cleaned
   (`Sanitizer`) and cut, the block's own end marker cannot be faked from inside, `Activity.distrust()` makes
-  `remember` and `forget` refuse for that turn, and an address in the selection may be repeated in the reply (the user's
-  own text).
-- A message with a context block is **not** routed to web research (`ResearchRouter`): "what does this mean?" is
-  about the selection. The model may still call `research` itself.
+  `remember` and `forget` refuse for a turn whose block brings *new text from the screen* (a selection not given before,
+  or page text: `ScreenBlock.brings_text`) but not for one with only the app and window, and an address in the selection
+  may be repeated in the reply (the user's own text).
+- **The page or document behind the context is read** (`ScreenPage`, no model request): when nothing is selected, the
+  context has an address, and the message matches `ScreenSettings.page_words` ("summarize", "this page", "translate"...),
+  the server fetches a web address with the guarded `PageReader` (public pages only, no login: a 403 is said plainly in
+  the block as "Page text: not available (...)", never guessed) or reads a local file (`document_suffixes` only: text,
+  Markdown, code, CSV, JSON, PDF through `pypdf`; no hidden files or folders, no keys or `.env`, `max_file_bytes`). It
+  goes in the block as data. After the answer `ScreenBlock.forget_page` replaces it by a note in the stored message
+  (`Tzara._drop_spent_evidence`), so later messages do not re-read it; a follow-up about the page needs the box reopened.
+- **The chip follows the app in front while the box is open** (`ChatBoxController.watch`, once a second): select
+  something else and it changes. `ScreenFollow` (tested) decides what changes it: what the user removed or just sent is
+  not put back until it differs. Nothing changes during a reply or when nothing could be read. `ScreenReader.prepare`
+  sets `AXManualAccessibility` on each app as it comes to the front: Chrome-based apps (VS Code, Slack) build their
+  accessibility tree only when asked and need several seconds, so a read made the instant the box opens found only the
+  window title. Each change writes numbers (never text) to `app.log`.
+- **The source line opens** (`ChatModel.screenExpanded`): click it and the window, the address and the selected text show in
+  an area that scrolls past about eight lines (a fixed height, `ChatView.selectionHeight`, because the flexible transcript
+  above would squeeze it); the cross removes the context. `--demo-screen --expand-screen` shows it.
+- **Layout** (`ChatView.contextTray`): one card above the input holds the source line (with ✕), the permission note when
+  needed and the buttons; with only the last answer to work on it is the bare row of buttons. No stacked bars.
+- **Buttons** (`QuickAction`): Explain and Translate, beside "On the selection / this page / the last answer" so the target
+  is never a surprise. They work on the selection, else the page, else the assistant's last answer ("Explain your last
+  answer in simpler terms"); no model request. Translate uses Settings → "Translate into" or the Mac's language, and goes
+  into English if the text already is in it. `--demo-screen` (with `--snapshot`) shows a made-up context.
+- **Layout** (`ChatView.contextTray`): one card above the input holds the source line (with ✕), the permission note when
+  needed and the buttons; with only the last answer to work on it is the bare row of buttons. No stacked bars.
+- **Buttons**: with something to act on (`ScreenContext.actionable`: a selection or an address) the box shows one-word
+  buttons (`QuickAction`: Summarize, Explain, Translate, Rewrite, Shorten) that send an ordinary message about "this".
+  Without a selection or page they act on the **assistant's last answer** ("Summarize your last answer"): the follow-up
+  buttons, with no model request (the old suggestion buttons cost one and were removed). Translate uses Settings → "Translate into" or the Mac's language, and goes into English if the text already is in it.
+  `--demo-screen` (with `--snapshot`) shows a made-up context to look at the chip and buttons.
+- **Look**: `ultraThinMaterial` background, a light gradient rim, and `alphaValue = 0.95` on the panel. The snapshot mode
+  cannot show the material (it draws the view without what is behind it): judge it on screen.
+- A message whose block brings new text (`brings_text`) is **not** routed to web research (`ResearchRouter`): "what
+  does this mean?" is about the selection. With only the app and window, or a selection already given, the rules read
+  what the user wrote and research happens as usual (the context is on every message, so it must not switch research off).
 - Never read: password managers (`ScreenReader.neverRead`) and secure text fields. Web addresses lose their query and
   fragment (`ScreenContext.cleanAddress`) because they often hold tokens.
+- **How a selection is found** (`ScreenReader.selection`), in turn: `AXSelectedText`; the selected range inside `AXValue`;
+  the text-marker range of web content (`AXStringForTextMarkerRange`); then the same in the elements under the focused one
+  (bounded: 250 elements, 0.25 s; only web areas, text areas and static text, never text fields, or the address bar would
+  answer for the page); then text the user has *copied* since the app came to the front (`copied`, shown as "N characters
+  copied"). Reads run off the main thread.
+- **Teams (new Teams, WebView2) exposes almost nothing** to Accessibility (about 11 elements, no focused element) and
+  rejects `AXManualAccessibility`: its selection cannot be read; select, press ⌘C and the copied text is used. Outlook's
+  mail list exposes a table; whether the reading pane's selection is exposed is not verified. Word exposes little text.
+  `Tzara --probe-screen 8` (switch to the app, select text) prints in numbers what is found and by which way.
+- **Chrome** exposes the selection through `AXSelectedText` on its focused element (verified: 163 characters read from a
+  page selection); `AXManualAccessibility` and `AXEnhancedUserInterface` are rejected by Chrome, and are not needed. An
+  app answers slowly the first time, hence `ScreenReader.answerTimeout`. If Tzara itself is not under Privacy & Security →
+  Accessibility only the app name is read, so the chip says so and links to the Settings page. Each read writes numbers
+  (never text) to `app.log`: `screen: <app>; window n chars; address read; selection n chars`.
 - Verified live: the window title and address of the front app. Not verified: selected text in each app (Chrome and
   Electron apps need `AXManualAccessibility`, which the reader sets). Not built: replacing the selection in the other
   app (would need simulated keystrokes into whatever is in front), reading the clipboard, files and other apps.
@@ -360,6 +410,11 @@ together (`PageReader.fetch`) and keep the passages that match the question (`Pa
   Wikipedia is searched in the same round as the web (`Researcher(extras=...)`), ranks below the web's best pages,
   and fills in when the engines find nothing. GitHub repository search was tried and removed: its matches for
   natural questions were noise.
+- **Parse one page at a time** (`PageExtractor.PARSING`): `lxml` under `trafilatura` aborts the whole process now and then
+  ("Fatal Python error: Aborted") when several threads parse at once, and research reads its pages together. It crashed the
+  test run about one time in three on real Wikipedia HTML and would have crashed the installed server. Downloads stay
+  parallel; parsing (~30 ms a page) takes turns. Tests never touch the network (`tests/conftest.py` blocks all HTTP except
+  to this computer): a question in a test is researched, and its real page reads were what triggered the crash.
 - **Hostile pages** (learned from OpenClaw's web plugins): `Sanitizer` removes invisible characters (zero-width, direction
   overrides, the "tag" block) from page text, titles and snippets, and only `max_html_chars` of a page are parsed.
 - Paid or keyed search APIs (Serper, Brave, Tavily...) were built and removed: the project is free and keyless.

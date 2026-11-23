@@ -184,6 +184,8 @@ struct SettingsView: View {
                 + "Nothing is read from password managers or password fields."
         )
         .font(.caption).foregroundStyle(.secondary)
+        TextField("Translate into", text: $settings.translateInto, prompt: Text(ScreenPreferences.systemLanguage))
+            .help("The language the Translate button uses. Anything already in that language goes into English.")
         if settings.useScreen, !settings.screenAllowed {
             HStack {
                 Text("Needs the Accessibility permission to read selected text and window titles.")

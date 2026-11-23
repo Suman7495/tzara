@@ -232,19 +232,22 @@ class Researcher:
         self._report(self._prompts.research_searching.format(queries=" · ".join(queries[:2])))
         # The key words suit an API's own search better than a whole sentence does.
         short_query = next((q for q in queries[1:] if "site:" not in q), queries[0])
-        sources = [(self._backend, query) for query in queries] + [
-            (extra, short_query) for extra in self._extras if extra.applies(question)
+        sources = [(self._backend, query, True) for query in queries] + [
+            (extra, short_query, False) for extra in self._extras if extra.applies(question)
         ]
 
-        def one(source: tuple[Any, str]) -> list[SearchHit]:
-            backend, query = source
+        def one(source: tuple[Any, str, bool]) -> tuple[bool, list[SearchHit]]:
+            backend, query, general = source
             try:
-                return list(backend.hits(query))
+                return general, list(backend.hits(query))
             except WebError as error:
                 logger.info("search %r found nothing: %s", query, error)
-                return []
+                return general, []
 
-        results = [found or [] for found in self._gather(one, sources, good=bool)]
+        # Only the general search starts the grace period: Wikipedia answers in a third of a
+        # second, and that must not cut off the search that takes a second or two.
+        gathered = self._gather(one, sources, good=lambda result: result[0] and bool(result[1]))
+        results = [found[1] if found else [] for found in gathered]
         return results[: len(queries)], results[len(queries) :]
 
     def _gather(

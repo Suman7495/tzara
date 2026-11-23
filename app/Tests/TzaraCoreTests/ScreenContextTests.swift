@@ -43,10 +43,118 @@ struct ScreenContextTests {
     }
 
     @Test func isOffUntilTheUserTurnsItOn() throws {
-        let defaults = try #require(UserDefaults(suiteName: "tzara-screen-test-\(UUID().uuidString)"))
+        let suite = "tzara-screen-test-\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
         let preferences = ScreenPreferences(defaults: defaults)
         #expect(preferences.enabled == false)
         preferences.enabled = true
         #expect(ScreenPreferences(defaults: defaults).enabled)
+    }
+
+    @Test func hasSomethingToActOnWhenThereIsASelectionOrAnAddress() {
+        #expect(!ScreenContext(app: "Notes", window: "Plans").actionable)
+        #expect(ScreenContext(app: "Safari", address: "https://example.com").actionable)
+        #expect(ScreenContext(app: "Notes", selection: "hola").actionable)
+    }
+
+    @Test func offersTwoOneWordActions() {
+        #expect(QuickAction.allCases.map(\.label) == ["Explain", "Translate"])
+        #expect(QuickAction.allCases.allSatisfy { !$0.label.contains(" ") })
+    }
+
+    @Test func eachActionSendsAMessageAboutThis() {
+        #expect(QuickAction.explain.prompt(translateInto: "German") == "Explain this.")
+        let translate = QuickAction.translate.prompt(translateInto: "German")
+        #expect(translate.contains("into German") && translate.contains("into English instead"))
+    }
+
+    @Test func theSameActionsWorkOnTheLastAnswer() {
+        #expect(QuickAction.explain.prompt(translateInto: "German", on: .reply).contains("simpler terms"))
+        let translate = QuickAction.translate.prompt(translateInto: "German", on: .reply)
+        #expect(translate.hasPrefix("Translate your last answer into German"))
+    }
+
+    @Test func textTheUserCopiedIsSaidToBeCopiedAndIsNotSent() throws {
+        let copied = ScreenContext(app: "Teams", selection: "hello", copied: true)
+        #expect(copied.summary == "Teams \u{00B7} 5 characters copied")
+        let sent = try #require(String(data: JSONEncoder().encode(copied), encoding: .utf8))
+        #expect(!sent.contains("copied"))
+        let back = try JSONDecoder().decode(ScreenContext.self, from: Data(sent.utf8))
+        #expect(back.selection == "hello" && back.copied == false)
+    }
+
+    @Test func translatesIntoTheLanguageTheUserChoseOrElseTheMacs() throws {
+        let suite = "tzara-translate-test-\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let preferences = ScreenPreferences(defaults: defaults)
+        #expect(preferences.translateInto == ScreenPreferences.systemLanguage)
+        preferences.translateInto = "  French "
+        #expect(preferences.translateInto == "French")
+        preferences.translateInto = "   "
+        #expect(preferences.translateInto == ScreenPreferences.systemLanguage)
+    }
+
+    // MARK: - Following the app in front
+
+    private let notes = ScreenContext(app: "Notes", window: "Plans")
+    private let selected = ScreenContext(app: "Code", window: "agent.py", selection: "max_input_tokens")
+
+    @Test func showsWhatWasReadWhenTheBoxOpens() {
+        var follow = ScreenFollow()
+        follow.start(with: notes)
+        #expect(follow.current == notes)
+        follow.start(with: ScreenContext())
+        #expect(follow.current == nil)
+    }
+
+    @Test func updatesWhenTheUserSelectsSomethingNewWhileTheBoxIsOpen() {
+        var follow = ScreenFollow()
+        follow.start(with: notes)
+        let changed = follow.follow(selected)
+        let again = follow.follow(selected)
+        #expect(changed)
+        #expect(follow.current == selected)
+        #expect(!again)  // nothing new
+    }
+
+    @Test func keepsWhatItHasWhenNothingCouldBeRead() {
+        var follow = ScreenFollow()
+        follow.start(with: selected)
+        let none = follow.follow(nil)
+        let empty = follow.follow(ScreenContext())
+        #expect(!none)
+        #expect(!empty)
+        #expect(follow.current == selected)
+    }
+
+    @Test func doesNotPutBackWhatTheUserRemoved() {
+        var follow = ScreenFollow()
+        follow.start(with: selected)
+        follow.drop()
+        #expect(follow.current == nil)
+        let sameAgain = follow.follow(selected)  // still selected over there, but removed here
+        let different = follow.follow(notes)
+        #expect(!sameAgain)
+        #expect(different)
+    }
+
+    @Test func keepsWhatIsAttachedWhenAMessageIsSent() {
+        var follow = ScreenFollow()
+        follow.start(with: selected)
+        // Sending does not touch it: the box always shows what Tzara is aware of.
+        #expect(follow.current == selected)
+        let same = follow.follow(selected)
+        #expect(!same)
+        #expect(follow.current == selected)
+    }
+
+    @Test func startsAgainWhenTheBoxOpensAgain() {
+        var follow = ScreenFollow()
+        follow.start(with: selected)
+        follow.drop()
+        follow.start(with: selected)
+        #expect(follow.current == selected)
     }
 }
