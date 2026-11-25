@@ -205,6 +205,13 @@ push does not retrigger workflows. The `sync` job then merges `main` into `devel
 commits survive; it runs after unreleased merges too, not after a failed release; a conflict fails the job with
 instructions, most likely from a hand-edited version line). `main` and `develop` must let the Actions bot push. The tag is what `install.sh` and `tzara setup` use, so the tagged commit
 must carry the matching `pyproject.toml` version: never tag by hand.
+**`ServiceInstaller` writes every `TZARA_*` variable of its environment into the launchd job** (so a custom port survives).
+A development copy of the app (`make dev`) runs with `TZARA_DATA_DIR`, `TZARA_SERVER_PORT` and `TZARA_LOG_FILE` set, so
+an Update clicked in it once pointed the real server's job at `/tmp/tzara-dev` and port 18927, and the restart failed
+("Bootstrap failed: 5"). Now only the installed copy (`InstalledCopy.isInstalled`: under `/Applications/`, which includes
+`~/Applications`) may update or uninstall; a build from the project folder says so instead. To repair a job that has
+dev settings in it: `plutil -remove EnvironmentVariables ~/Library/LaunchAgents/ai.telekinesis.tzara.server.plist`, then
+`launchctl bootstrap gui/$(id -u) <that plist>`.
 Never run `tzara setup`/`uninstall` against default paths while developing: they stop the
 running server and app. Use `TZARA_DATA_DIR`, `TZARA_APP_DIR`, `TZARA_SERVER_PORT`.
 

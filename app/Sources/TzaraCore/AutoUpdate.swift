@@ -1,6 +1,24 @@
 import Foundation
 
 /// What the user chose about updates, and when the app last looked. Stored in the app's defaults.
+/// Whether this copy of the app is the installed one, as opposed to a developer's build.
+///
+/// Only the installed copy may update or uninstall Tzara. A build run from the project folder
+/// (`make dev`) carries its own settings in its environment (another port, another data folder),
+/// and the installer writes the environment it finds into the background job: an update started
+/// from it pointed the real server at the development folder and port, and the restart failed.
+public enum InstalledCopy {
+    public static func isInstalled(bundlePath: String) -> Bool {
+        bundlePath.contains("/Applications/")
+    }
+
+    public static var isInstalled: Bool { isInstalled(bundlePath: Bundle.main.bundlePath) }
+
+    /// What to say instead of updating or uninstalling.
+    public static let developmentNotice =
+        "This is a development build, so it does not update or uninstall Tzara. Use the installed app for that."
+}
+
 public final class UpdatePreferences: @unchecked Sendable {
     static let autoUpdateKey = "autoUpdate"
     static let lastCheckKey = "lastUpdateCheck"

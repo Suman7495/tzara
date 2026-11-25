@@ -22,7 +22,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         let version = AppVersion(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "")
         // Only an installed copy updates itself: one run from the build folder is a developer's.
-        let installed = Bundle.main.bundlePath.contains("/Applications/")
+        let installed = InstalledCopy.isInstalled
         if let version, installed, !CommandLine.arguments.contains("--snapshot") {
             autoUpdater = AutoUpdater(currentVersion: version, isBusy: { chatBox.isOpen || chatBox.isWorking })
             autoUpdater?.start()

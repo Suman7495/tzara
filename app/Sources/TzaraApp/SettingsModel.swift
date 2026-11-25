@@ -186,6 +186,10 @@ final class SettingsModel: ObservableObject {
     /// comes back by itself after about a minute.
     func update() {
         guard !isUpdating else { return }
+        guard InstalledCopy.isInstalled else {
+            updateMessage = InstalledCopy.developmentNotice
+            return
+        }
         isUpdating = true
         updateMessage = "Checking for updates\u{2026}"
         Task {
@@ -210,6 +214,10 @@ final class SettingsModel: ObservableObject {
     /// Removes Tzara: the app, the login items, the server and the command. Ollama, its models
     /// and the logs stay. Call this only after the user has confirmed.
     func uninstall() {
+        guard InstalledCopy.isInstalled else {
+            updateMessage = InstalledCopy.developmentNotice
+            return
+        }
         guard !isUninstalling else { return }
         isUninstalling = true
         updateMessage = "Uninstalling\u{2026} Tzara will close in a few seconds."

@@ -113,3 +113,16 @@ struct UpdaterTests {
 private final class Box<Value>: @unchecked Sendable {
     var value: Value?
 }
+
+@Suite("InstalledCopy")
+struct InstalledCopyTests {
+    @Test func theAppInTheApplicationsFolderIsTheInstalledOne() {
+        #expect(InstalledCopy.isInstalled(bundlePath: "/Applications/Tzara.app"))
+        #expect(InstalledCopy.isInstalled(bundlePath: "/Users/me/Applications/Tzara.app"))
+    }
+
+    @Test func aBuildInTheProjectFolderIsNot() {
+        #expect(!InstalledCopy.isInstalled(bundlePath: "/Users/me/code/tzara/app/build/Tzara.app"))
+        #expect(!InstalledCopy.isInstalled(bundlePath: "/Users/me/code/tzara/app/.build/debug"))
+    }
+}
