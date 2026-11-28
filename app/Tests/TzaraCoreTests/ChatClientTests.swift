@@ -161,19 +161,6 @@ struct ChatClientStreamTests {
         #expect(sentContext?["selection"] == "hola" && sentContext?["address"] == "")
     }
 
-    @Test func sendsTheQuestionTheSearchButtonSearchesFor() async throws {
-        final class Seen: @unchecked Sendable { var body = Data() }
-        let seen = Seen()
-        let harness = try makeHarness { request in
-            seen.body = body(of: request)
-            return .init(body: sse([("done", #"{"first_token_seconds": null, "characters": 0}"#)]))
-        }
-        _ = try await collect(harness.client.stream("Search online.", searchFor: "capital of Australia"))
-        let sent = try JSONSerialization.jsonObject(with: seen.body) as? [String: Any]
-        #expect(sent?["message"] as? String == "Search online.")
-        #expect(sent?["search_for"] as? String == "capital of Australia")
-    }
-
     @Test func leavesTheContextOutWhenThereIsNone() async throws {
         final class Seen: @unchecked Sendable { var bodies: [Data] = [] }
         let seen = Seen()

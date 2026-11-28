@@ -44,9 +44,9 @@ struct BarBehaviorTests {
     }
 
     @Test func theAnswerAreaGrowsWithinLimits() {
-        #expect(BarLayout.answerHeight(characters: 10, steps: 0, hasButtons: false) == BarLayout.minimumAnswer)
-        #expect(BarLayout.answerHeight(characters: 100_000, steps: 3, hasButtons: true) == BarLayout.maximumAnswer)
-        #expect(BarLayout.answerHeight(characters: 300, steps: 0, hasButtons: false) > BarLayout.minimumAnswer)
+        #expect(BarLayout.answerHeight(characters: 10, steps: 0) == BarLayout.minimumAnswer)
+        #expect(BarLayout.answerHeight(characters: 100_000, steps: 3) == BarLayout.maximumAnswer)
+        #expect(BarLayout.answerHeight(characters: 300, steps: 0) > BarLayout.minimumAnswer)
     }
 
     @Test func theBarIsABubbleAPillOfSuggestionsAndAPromptWithGapsBetween() {

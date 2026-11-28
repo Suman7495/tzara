@@ -89,3 +89,11 @@ class TestTheReport:
         broken = report_with(lambda request: httpx.Response(500))
         with pytest.raises(WebError):
             broken.report("weather in darmstadt")
+
+
+class TestContractionsAreNotPlaces:
+    @pytest.mark.parametrize(
+        "question", ["what's the weather today?", "how's the weather", "Whats the weather"]
+    )
+    def test_whats_is_not_a_city(self, question):
+        assert report_with(service).place(question) is None

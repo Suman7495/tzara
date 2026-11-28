@@ -190,7 +190,7 @@ public final class ChatClient: @unchecked Sendable {
     /// Stop consuming the stream (or cancel the task reading it) to cancel the reply: the
     /// connection closes and the server stops writing.
     public func stream(
-        _ message: String, context: ScreenContext? = nil, searchFor: String? = nil, place: String? = nil
+        _ message: String, context: ScreenContext? = nil, place: String? = nil
     ) -> AsyncThrowingStream<ChatEvent, Error> {
         AsyncThrowingStream { continuation in
             let task = Task {
@@ -199,7 +199,7 @@ public final class ChatClient: @unchecked Sendable {
                         path: "/v1/chat", method: "POST",
                         body: ChatBody(
                             message: message, context: context.flatMap { $0.isEmpty ? nil : $0 },
-                            searchFor: searchFor, place: place),
+                            place: place),
                         timeout: Self.replyTimeout)
                     let (bytes, response) = try await session.bytes(for: request)
                     if let http = response as? HTTPURLResponse, http.statusCode != 200 {
@@ -215,7 +215,7 @@ public final class ChatClient: @unchecked Sendable {
                         continuation.yield(event)
                         switch event {
                         case .done, .error: continuation.finish(); return
-                        case .token, .status, .tool, .choices: break
+                        case .token, .status, .tool: break
                         }
                     }
                     continuation.finish()
@@ -341,13 +341,10 @@ public final class ChatClient: @unchecked Sendable {
 private struct ChatBody: Encodable {
     let message: String
     let context: ScreenContext?
-    /// The question the "Search online" button searches for; the message is then only its label.
-    let searchFor: String?
     /// Where the user is (a city and country), if their Mac said so.
     let place: String?
 
     private enum CodingKeys: String, CodingKey {
         case message, context, place
-        case searchFor = "search_for"
     }
 }

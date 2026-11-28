@@ -48,7 +48,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let arguments = CommandLine.arguments
         let inBackground = arguments.contains("--background")
         let showsDashboard = arguments.contains("--settings")
-        let showsBar = ["--show", "--demo-screen", "--demo-choices", "--bar-ask"].contains(where: arguments.contains)
+        let showsBar = ["--show", "--demo-screen", "--bar-ask"].contains(where: arguments.contains)
             || (arguments.contains("--snapshot") && !showsDashboard)
         if !inBackground, showsDashboard {
             // `--page memory|apps|docs|general|context|about` opens that page, for a snapshot.
@@ -94,10 +94,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let seconds = Double(arguments[flag + 1])
         {
             DispatchQueue.main.asyncAfter(deadline: .now() + seconds) { bar.hide() }
-        }
-        // `--demo-choices` shows a reply that asks "Search online?" with its buttons.
-        if arguments.contains("--demo-choices") {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { bar.showDemoChoices() }
         }
         // `--snapshot FILE` draws the bar (or, with --settings, the dashboard) into a PNG after it has loaded, then quits. Add
         // `--snapshot-after SECONDS` to wait longer, for things that arrive late.

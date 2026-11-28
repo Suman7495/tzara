@@ -155,7 +155,7 @@ macOS app is a thin client of it. The endpoints are in the [README](README.md#lo
   Settings → Context & writing) and a small glass bar opens beside the pointer, toggling closed on the next tap. The answer area is above the input (it grows upward), then a chip for what Tzara can see
   (✕ removes it), then the input line; the answer area appears only after something is asked (`BarLayout` sizes it). Enter sends: `BarIntent.decide` picks in code (questions and explain/summarise are always chat, checked first, so "explain this" never replaces a selection; in a text field everything else is written; with no field found only a line that plainly asks for text, which goes to the clipboard) whether
   the line is **written into the text field** of the app that was in front (`FieldWriter`, see "Writing in other apps") or **answered in the bar** as a chat
-  (`ChatModel`, which still holds the conversation, screen context, steps, choices). It is a **silent companion** with three looks: the **prompt** (input, plus the chip), **only the response** as a bubble while Tzara answers (the input is hidden), then the response
+  (`ChatModel`, which still holds the conversation, screen context, steps). It is a **silent companion** with three looks: the **prompt** (input, plus the chip), **only the response** as a bubble while Tzara answers (the input is hidden), then the response
   with **the prompt again** below it (`BarState.showsInput`, `BarLayout.height`). It is **movable** (drag the background; not remembered) and **goes away when you click another window
   or switch app** (a global mouse-down monitor and the app-activation notification in `BarController`; the bar never takes the front, so clicks elsewhere reach those apps); the key brings it back.
   There is no idle timer and no pin. **The bar is not one box**: the response is a bubble of its own, the suggestions small pills, the prompt a pill, each glass piece on a clear panel with `BarLayout.gap` between them (a chat inside a box looked wrong); the bubble is as tall as its measured content (`ContentHeightKey` -> `BarState.contentHeight`). **A reply asked from the bar that finishes while the bar is hidden makes it pop up** (`BarController.popUp`: `orderFrontRegardless`, never the keyboard); asked from the dashboard it does not. Test aids: `--bar-ask TEXT`, `--bar-hide-after SECONDS`. A write hides the bar for
@@ -171,7 +171,7 @@ macOS app is a thin client of it. The endpoints are in the [README](README.md#lo
   server's token and address files, and its app then says the server is not running.
 - **The dashboard** (`DashboardController`, `DashboardView`): laid out like a chat app and opened filling the screen: a custom sidebar that folds to a column of icons (its button is inside it), and pages built from `DashboardKit` (`Page`, `Card`, `Line`, `Chip`, `SearchField`): **Chat** (input at the bottom, `ChatModel.ask`, no screen context), **Memory** (`MemoryPage`: facts, activity, writing samples and every stored conversation, searchable, from `GET /v1/memory` and `/v1/memory/conversations/{id}`), **Apps** (`AppsPage`: cards with a drawn logo, search and filters Connected/Available/Needs attention; tools in a sheet), **Docs** (`DocsPage`, text in TzaraCore `DocsContent`), and Settings pages General, Context & writing, About. An ordinary window with a sidebar (New chat, Chat, General, Memory, Context & writing, Apps, About;
   `SettingsView(page:)`), opened from the menu-bar icon or by reopening the app. While open Tzara is a regular app (Dock icon); closing returns to
-  menu-bar only. Test aids: `--settings [--page apps] --snapshot FILE`, `--show`/`--demo-choices --snapshot FILE` for the bar.
+  menu-bar only. Test aids: `--settings [--page apps] --snapshot FILE`, `--show --snapshot FILE` for the bar.
 - `make app` signing can hang on a Keychain prompt for the "Tzara Signing" key; for layout checks run `app/.build/debug/TzaraApp` with the snapshot flags.
 
 `app/` is a Swift package: `TzaraCore` (everything that needs no screen, unit-tested with
@@ -310,19 +310,14 @@ the user is in. The server gives a selection to the model once and then calls it
   with something on the screen to lean on (a selection, typed text, window text or a page): `web_words` ("search", "news",
   "weather", "who won", "price of"...) -> **WEB**, straight away; any sign it is about the screen (`screen_words` incl. bare
   "this"/"that"/"it", pronouns, or even ONE shared content word with the screen) -> **SCREEN** (answered from it,
-  `ResearchRouter` told to skip); otherwise -> **ASK**: no search is started on a guess. `Tzara._ask` replies at once
-  ("I could not connect that to what is on your screen. Search online? It takes a while.") with a `Choices` event
-  (server event `choices`; the app draws two buttons under the reply). The question and the ask are kept in the
-  conversation. **Search online** sends `POST /v1/chat` with `message: "Search online."` and `search_for: <the question>`
-  (`Tzara.run(search_for=...)` forces the search for that question whatever the message says); **No search** sends a message
-  telling the model to answer its last question from the screen or from what it knows. With nothing on the screen, or for
-  messages that are not questions for the web, the old rules apply. `ResearchRouter(route=...)` takes the per-turn decision
-  (`"skip"` or `("search", question)`) from `Tzara._turn_route`.
+  `ResearchRouter` told to skip); otherwise nothing is forced: the model decides, with `read_screen` and `research` (there is no
+  ask-the-user step). With nothing on the screen, or for messages that are not questions for the web, the old rules apply.
+  `ResearchRouter(route=...)` takes the per-turn decision (`"skip"` or `("search", question)`) from `Tzara._turn_route`.
 - **Visible text** (`ScreenReader.readVisible`): depth-first over the focused window's accessibility tree, which follows
   reading order; skips toolbars, menus and buttons; keeps 12 rows of each table or list, the selected row first; 1,500
   nodes, 0.4 s, 200 characters an element. Measured: Outlook 2,885 characters in 0.2 s (an unlimited walk found 176,000
   of mail-list cells), Slack 1,757, Excel 1,286, Chrome 7,663, VS Code (the editor's text near the cursor works),
-  Terminal (screen text), Notes 477; **Teams and Word give nothing**. `--demo-choices` shows an ask with its buttons.
+  Terminal (screen text), Notes 477; **Teams and Word give nothing**.
 - **The "Sources:" instruction lives in the research evidence** (`research_results_heading`), not in the system prompt: in the
   system prompt the 8B model added "Sources: Screen context data" to answers that came from the screen.
 - **The page or document behind the context is read** (`ScreenPage`, no model request): when nothing is selected, the
@@ -557,6 +552,15 @@ so tests use a fake and never open anything.
   The result must not depend on how the stream is cut (tested with random chunking). When something was removed the
   checkpoint's last AI message is rewritten too (`update_state` with the same id), so a restart or reopening cannot
   bring a made-up link back. The model was inventing real shops' domains with invented product paths.
+
+## TzaraBench (`bench/`, `python -m bench`)
+
+How good is the agent at real work? 76 tasks in 8 areas (email, teams, linkedin, notion, context, memory, web, recovery) and 7 categories (context, tools, multistep, research,
+memory, writing, recovery) run against a fresh server with a fake Notion MCP app (`bench/fake_notion.py`, real tool names) and checks on facts, tools used, languages, length and the pages
+afterwards. Results go to `bench/results/*.json` (answers included): read the failing answers, not just the score. Baseline with qwen3:8b: 65% of tasks passed, then 79% after code fixes
+(own-content search, no forced research with apps connected, first search result read, failed-step guard). Scores move by a task or two between runs (a small model is not deterministic): compare
+categories over several runs, and add a task for every failure found by hand. The bench found real bugs the unit tests did not (`what's` read as a city, a made-up page summarised for a missing one).
+Not measured yet: writing quality beyond proxies, Teams/LinkedIn reading in real apps, approval flows.
 
 ## Speed rules (measured; read before adding a model call)
 

@@ -62,7 +62,7 @@ filterwarnings = ["error::pytest.PytestUnraisableExceptionWarning"]
 [tool.ruff]
 line-length = 100
 target-version = "py311"
-src = ["src", "tests"]
+src = ["src", "tests", "bench"]
 
 [tool.ruff.lint]
 select = [
@@ -85,12 +85,16 @@ convention = "google"
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["D"]
+"bench/**" = ["D"]
+# Benchmark data: emails, chats and prompts are long lines of text, not code.
+"bench/fixtures.py" = ["D", "E501", "RUF012"]
+"bench/tasks.py" = ["D", "E501"]
 
 # --- Type checking -----------------------------------------------------------
 
 [tool.mypy]
 python_version = "3.11"
-files = ["src", "tests"]
+files = ["src", "tests", "bench"]
 mypy_path = "tests"
 warn_unused_ignores = true
 warn_redundant_casts = true

@@ -17,7 +17,6 @@ from tzara.agent import Tzara
 from tzara.agent.events import (
     AgentEvent,
     AssistantDelta,
-    Choices,
     Progress,
     RunCompleted,
     ToolCompleted,
@@ -85,17 +84,6 @@ class ToolEvent:
 
 
 @dataclass(frozen=True)
-class ChoicesEvent:
-    """Buttons to show under the reply, for a question the reply asks.
-
-    Attributes:
-        options: Each button as ``label``, ``message`` and, for one that searches, ``search_for``.
-    """
-
-    options: list[dict[str, str | None]]
-
-
-@dataclass(frozen=True)
 class DoneEvent:
     """The reply is complete.
 
@@ -115,7 +103,7 @@ class ErrorEvent:
     message: str
 
 
-TurnEvent = TokenEvent | StatusEvent | ToolEvent | ChoicesEvent | DoneEvent | ErrorEvent
+TurnEvent = TokenEvent | StatusEvent | ToolEvent | DoneEvent | ErrorEvent
 
 # What a turn reports to: each event, then ``None`` when nothing more will come.
 EventSink = Callable[[TurnEvent | None], None]
@@ -136,7 +124,6 @@ class ChatTurn:
         sink: EventSink,
         release: Callable[[], None],
         context: ScreenContext | None = None,
-        search_for: str | None = None,
         place: str = "",
     ) -> None:
         """Prepare a turn. Nothing runs until :meth:`start`.
@@ -147,7 +134,6 @@ class ChatTurn:
             sink: Receives each event, then ``None`` at the end.
             release: Called once the turn is over, to free the service.
             context: What the user was looking at, if the app sent it.
-            search_for: A question to search the web for, if the user pressed "Search online".
             place: Where the user is (a city), if the Mac app found out and was allowed to say.
         """
         self._agent = agent
@@ -155,7 +141,6 @@ class ChatTurn:
         self._sink = sink
         self._release = release
         self._context = context
-        self._search_for = search_for
         self._place = place
         self._cancelled = threading.Event()
 
@@ -181,7 +166,7 @@ class ChatTurn:
     def _run(self) -> None:
         """Stream the reply into the sink, whatever happens."""
         extra = {"place": self._place} if self._place else {}
-        replies = self._agent.run(self._text, self._context, self._search_for, **extra)
+        replies = self._agent.run(self._text, self._context, **extra)
         try:
             for event in replies:
                 if self.cancelled:
@@ -212,19 +197,6 @@ class ChatTurn:
             return [ToolEvent(event.name, "failed" if event.failed else "completed")]
         if isinstance(event, Progress):
             return [StatusEvent(event.text)]
-        if isinstance(event, Choices):
-            return [
-                ChoicesEvent(
-                    [
-                        {
-                            "label": option.label,
-                            "message": option.message,
-                            "search_for": option.search_for,
-                        }
-                        for option in event.options
-                    ]
-                )
-            ]
         assert isinstance(event, RunCompleted)
         return [DoneEvent(event.first_token_seconds, event.characters)]
 
@@ -353,7 +325,6 @@ class ChatService:
         text: str,
         sink: EventSink,
         context: ScreenContext | None = None,
-        search_for: str | None = None,
         place: str = "",
     ) -> ChatTurn:
         """Begin answering ``text``.
@@ -362,7 +333,6 @@ class ChatService:
             text: The user's message.
             sink: Receives each event as it happens, then ``None``.
             context: What the user was looking at, if the app sent it.
-            search_for: A question to search the web for, if the user pressed "Search online".
             place: Where the user is, if known.
 
         Returns:
@@ -383,7 +353,6 @@ class ChatService:
                 sink,
                 release=self._end_turn,
                 context=context,
-                search_for=search_for,
                 place=place,
             )
             self._turn = turn

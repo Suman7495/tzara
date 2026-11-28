@@ -20,12 +20,12 @@ upgrade:
 		--upgrade --output-file requirements.lock
 
 format:
-	ruff format src tests
-	ruff check --fix src tests
+	ruff format src tests bench
+	ruff check --fix src tests bench
 
 lint:
-	ruff format --check src tests
-	ruff check src tests
+	ruff format --check src tests bench
+	ruff check src tests bench
 
 typecheck:
 	mypy

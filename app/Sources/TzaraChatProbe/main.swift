@@ -56,8 +56,6 @@ do {
                 show("\n[tool \(name): \(state.rawValue)]")
             case let .status(text):
                 show("\n[\(text)]\n")
-            case let .choices(options):
-                show("\n[buttons: \(options.map(\.label).joined(separator: " | "))]")
             case let .done(firstTokenSeconds, characters):
                 let first = firstTokenSeconds.map { String(format: "%.2fs", $0) } ?? "n/a"
                 show("\n[done: \(characters) characters, first token \(first)]\n")

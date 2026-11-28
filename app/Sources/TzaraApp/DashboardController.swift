@@ -213,7 +213,7 @@ struct DashboardView: View {
                         MessageRow(
                             message: message, waiting: model.phase == .waiting && isLast,
                             writing: model.phase != .idle && isLast, activity: isLast ? model.activity : nil,
-                            onChoose: model.choose, plain: true)
+                            plain: true)
                     }
                     if let notice = model.notice {
                         Text(notice).font(.callout).foregroundStyle(.secondary)

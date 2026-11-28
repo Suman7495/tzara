@@ -61,6 +61,31 @@ class TextEdit:
         )
 
     @classmethod
+    def target_missing(cls, instruction: str, text: str) -> bool:
+        """Whether the instruction names a paragraph, sentence or line the text does not have.
+
+        "Delete the ninth paragraph" of a text of three: there is nothing to do, and the model must
+        not be asked to improvise (it rewrote the text). The answer is "nothing changed".
+        """
+        lowered = cls.clean(instruction).lower()
+        ordinal = "|".join([*cls.ORDINALS, r"\d+(?:st|nd|rd|th)?"])
+        found = re.fullmatch(
+            rf"{cls.DELETE} (?:the )?(?P<which>{ordinal}) (?P<unit>{cls.UNITS})", lowered
+        ) or re.fullmatch(rf"{cls.DELETE} (?P<unit>{cls.UNITS}) (?P<which>\d+)", lowered)
+        if not found:
+            return False
+        which = found.group("which")
+        number = cls.ORDINALS.get(which) or int(re.sub(r"\D", "", which))
+        unit = found.group("unit")
+        if unit in {"paragraph", "para"}:
+            count = len(cls._paragraphs(text))
+        elif unit == "line":
+            count = len([line for line in text.split("\n") if line.strip()])
+        else:
+            count = len(re.findall(r"[^.!?\n]+(?:[.!?]+|$)\s*", text))
+        return number != -1 and number > count
+
+    @classmethod
     def apply(cls, instruction: str, text: str) -> str | None:
         """``text`` with the edit asked for, or ``None`` if ``instruction`` is not one of these."""
         original = cls.clean(instruction)

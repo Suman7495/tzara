@@ -73,9 +73,9 @@ public enum BarLayout {
 
     /// The height of the response bubble for `characters` of text and `steps` lines of what was done:
     /// as much as it needs, within limits, past which it scrolls.
-    public static func answerHeight(characters: Int, steps: Int, hasButtons: Bool) -> CGFloat {
+    public static func answerHeight(characters: Int, steps: Int) -> CGFloat {
         let lines = max(1, (characters + 45) / 46)
-        let needed = 24 + CGFloat(lines) * 19 + CGFloat(steps) * 22 + (hasButtons ? 38 : 0)
+        let needed = 24 + CGFloat(lines) * 19 + CGFloat(steps) * 22
         return min(maximumAnswer, max(minimumAnswer, needed))
     }
 

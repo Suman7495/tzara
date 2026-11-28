@@ -7,8 +7,6 @@ struct ChatMessage: Identifiable, Equatable {
     let id = UUID()
     let role: Role
     var text: String
-    /// Buttons offered under the message, when it asks a question ("Search online?").
-    var choices: [ChatChoice] = []
     /// What the assistant has done while working on this reply, so the user can see it is not stuck.
     var steps: [Step] = []
 
@@ -114,20 +112,6 @@ final class ChatModel: ObservableObject {
         screenNeedsPermission = needsPermission
     }
 
-    /// Shows an ask with its buttons, for `--demo-choices`, to look at how they sit under a reply.
-    func showDemoChoices() {
-        messages = [
-            ChatMessage(role: .user, text: "what is the capital of Australia"),
-            ChatMessage(
-                role: .assistant,
-                text: "I could not connect that to what is on your screen. Search online? It takes a while.",
-                choices: [
-                    ChatChoice(label: "Search online", message: "Search online.", searchFor: "capital?"),
-                    ChatChoice(label: "No search", message: "No."),
-                ]),
-        ]
-    }
-
     func dropScreen() {
         follow.drop()
         screen = nil
@@ -138,14 +122,6 @@ final class ChatModel: ObservableObject {
         guard canSend, !text.isEmpty else { return }
         draft = ""
         deliver(text)
-    }
-
-    /// Presses one of the buttons under a reply: sends what it says (and, for a search, what to
-    /// search for) as the user's next message. The buttons go, so it cannot be pressed twice.
-    func choose(_ choice: ChatChoice) {
-        guard phase == .idle, !isRenaming else { return }
-        for index in messages.indices { messages[index].choices = [] }
-        deliver(choice.message, searchFor: choice.searchFor)
     }
 
     /// A question typed in the dashboard. The screen is not sent with it: the dashboard is not about
@@ -162,7 +138,7 @@ final class ChatModel: ObservableObject {
     /// Where this turn's messages begin.
     private var turnStart = 0
 
-    private func deliver(_ text: String, searchFor: String? = nil, useScreen: Bool = true) {
+    private func deliver(_ text: String, useScreen: Bool = true) {
         notice = nil
         messages.append(ChatMessage(role: .user, text: text))
         turnStart = messages.count
@@ -179,17 +155,13 @@ final class ChatModel: ObservableObject {
             var waited = 0
             while true {
                 do {
-                    for try await event in client.stream(text, context: sent, searchFor: searchFor, place: place) {
+                    for try await event in client.stream(text, context: sent, place: place) {
                         switch event {
                         case let .status(text):
                             activity = text
                             addStep(text, toMessage: beginActivity())
                         case let .tool(_, state):
                             toolChanged(state)
-                        case let .choices(options):
-                            if let index = messages.firstIndex(where: { $0.id == beginAnswer() }) {
-                                messages[index].choices = options
-                            }
                         case let .token(piece):
                             activity = nil  // writing the answer means the tools are done
                             append(piece, toMessage: beginAnswer())
@@ -262,7 +234,7 @@ final class ChatModel: ObservableObject {
         writing = nil
         let turn = messages[min(turnStart, messages.count)...]
         let didThings = turn.contains { $0.role == .activity }
-        messages.removeAll { $0.role == .assistant && $0.text.isEmpty && $0.choices.isEmpty && turn.map(\.id).contains($0.id) }
+        messages.removeAll { $0.role == .assistant && $0.text.isEmpty && turn.map(\.id).contains($0.id) }
         let said = messages[min(turnStart, messages.count)...].contains { $0.role == .assistant }
         if !said, didThings, !Task.isCancelled, notice == nil {
             messages.append(ChatMessage(role: .assistant, text: Self.noAnswer))
@@ -395,7 +367,7 @@ final class ChatModel: ObservableObject {
     /// What to offer under the answer: follow-ups to it, or, with no answer, what works on the screen.
     var suggestions: [Suggestion] {
         let answer = messages.last(where: { $0.role != .activity })
-        let lastAnswer = answer?.role == .assistant && phase == .idle && answer?.choices.isEmpty == true ? answer?.text : nil
+        let lastAnswer = answer?.role == .assistant && phase == .idle ? answer?.text : nil
         return phase == .idle ? Suggestions.make(hasScreenText: screen?.actionable == true, lastAnswer: lastAnswer) : []
     }
 

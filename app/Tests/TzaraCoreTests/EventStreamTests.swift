@@ -171,22 +171,4 @@ struct EventStreamParserTests {
             return
         }
     }
-
-    @Test func readsTheButtonsOfAQuestionTheReplyAsks() {
-        var parser = EventStreamParser()
-        let lines = [
-            "event: choices",
-            #"data: {"options": [{"label": "Search online", "message": "Search online.", "search_for": "capital?"},"#
-                + #" {"label": "Use my screen", "message": "No.", "search_for": null}]}"#,
-            "",
-        ]
-        let events = lines.compactMap { parser.consume(line: $0) }
-        #expect(
-            events == [
-                .choices([
-                    ChatChoice(label: "Search online", message: "Search online.", searchFor: "capital?"),
-                    ChatChoice(label: "Use my screen", message: "No."),
-                ])
-            ])
-    }
 }

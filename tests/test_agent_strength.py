@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+from typing import Any, cast
 
 import httpx
 import pytest
 
 from helpers import RecordingFakeModel, personal_memory
 from tzara.agent.commands import MemoryCommands
+from tzara.agent.routing import QuestionRules
 from tzara.agent.textedit import TextEdit
 from tzara.agent.writer import InlineWriter, WriteRequest
 from tzara.config import TzaraConfig, WebSettings
@@ -396,7 +398,7 @@ class TestAClaimWithNoToolIsNotLetStand:
 
         agent = Tzara.__new__(Tzara)
         agent._config = TzaraConfig()
-        agent._activity = SimpleNamespace(tools_run=set())  # type: ignore[assignment]
+        agent._activity = SimpleNamespace(tools_run=set(), actions=[])  # type: ignore[assignment]
         for reply in [
             "I've taken care of the invoice and confirmed the meeting.",
             "I have booked it.",
@@ -405,3 +407,116 @@ class TestAClaimWithNoToolIsNotLetStand:
         assert agent._unconfirmed_change("The invoice is 4,200 EUR, due Friday.") == ""
         agent._activity.tools_run = {"remember"}
         assert agent._unconfirmed_change("I've saved that.") == ""
+
+
+class TestTheUsersOwnContentIsSearchedInTheirApps:
+    def test_my_notes_and_the_data_room_go_to_the_connected_app_without_naming_it(self):
+        from tzara.agent.routing import AppRouter
+
+        router = AppRouter({"notion": ("notion__notion-search", "query")})
+        for text in [
+            "Which documents are still missing from my data room?",
+            "What did we decide in my meeting notes?",
+            "Add a line to my Q4 Board Update page",
+        ]:
+            call = router.route(text)
+            assert call and call["name"] == "notion__notion-search", text
+        assert router.route("what is the capital of Australia") is None
+        assert (
+            router.route(
+                "which documents are missing from my data room", "Address: https://notion.so/x"
+            )
+            is None
+        )
+
+    def test_a_paragraph_the_text_does_not_have_is_not_improvised(self):
+        three = "One.\n\nTwo.\n\nThree."
+        assert TextEdit.target_missing("delete the ninth paragraph", three)
+        assert not TextEdit.target_missing("delete the second paragraph", three)
+        assert not TextEdit.target_missing("delete the last paragraph", three)
+        writer = InlineWriter(lambda: RecordingFakeModel.replying("never"), TzaraConfig(), None)
+        result = writer.write(
+            WriteRequest(app="Outlook", field=three, instruction="delete the ninth paragraph")
+        )
+        assert not result.changed and result.text == three
+
+
+class TestVerifyAndRetrieve:
+    @staticmethod
+    def agent(tools_run, actions):
+        from tzara.agent.agent import Tzara
+
+        agent = Tzara.__new__(Tzara)
+        agent._config = TzaraConfig()
+        agent._activity = SimpleNamespace(tools_run=set(tools_run), actions=actions)  # type: ignore[assignment]
+        return agent
+
+    def test_a_reply_that_claims_success_after_a_tool_failed_gets_the_error(self):
+        from tzara.agent.actions import ActionRecord
+
+        failed = ActionRecord(
+            "notion__notion-update-page", "pg_1", "failed: Error: old_str not found"
+        )
+        agent = self.agent({"notion__notion-update-page"}, [failed])
+        note = agent._unconfirmed_change("The cap table has been marked as uploaded.")
+        assert "notion-update-page" in note and "old_str not found" in note
+        assert agent._unconfirmed_change("I could not change it.") == ""
+
+    def test_an_empty_reply_after_tools_says_what_was_looked_into(self):
+        agent = self.agent({"notion__notion-search", "notion__notion-fetch"}, [])
+        agent._app_rules = True
+        text = agent._closing_note("")
+        assert "notion-fetch" in text and "notion-search" in text
+
+    def test_the_page_found_first_is_read_for_the_model(self):
+        from langchain_core.messages import HumanMessage, ToolMessage
+
+        from tzara.agent.routing import AppRouter
+
+        router = AppRouter(
+            {"notion": ("notion__notion-search", "query")},
+            {"notion": ("notion__notion-fetch", "id")},
+        )
+        found = ToolMessage(
+            content="Results:\n- Data Room (id: pg_0, url: https://www.notion.so/data-room-pg_0)",
+            tool_call_id="appsearch-1",
+            name="notion__notion-search",
+        )
+        answer = cast(Any, router).wrap_model_call(
+            SimpleNamespace(messages=[HumanMessage("x"), found]), lambda r: None
+        )
+        call = answer.tool_calls[0]
+        assert call["name"] == "notion__notion-fetch"
+        assert call["args"] == {"id": "https://www.notion.so/data-room-pg_0"}
+        # What the fetch returns is for the model: no further call is made here.
+        fetched = ToolMessage(content="page", tool_call_id=call["id"], name="notion__notion-fetch")
+        sentinel = object()
+        assert (
+            cast(Any, router).wrap_model_call(
+                SimpleNamespace(messages=[fetched]), lambda r: sentinel
+            )
+            is sentinel
+        )
+
+    def test_with_apps_connected_only_a_clear_web_question_is_forced_to_research(self):
+        from langchain_core.messages import HumanMessage
+
+        from tzara.agent.routing import ResearchRouter
+        from tzara.config import ResearchSettings
+
+        rules = QuestionRules(ResearchSettings())
+        router = ResearchRouter(rules, apps_connected=lambda: True, clearly_web=rules.topical)
+        request = SimpleNamespace(
+            messages=[HumanMessage("What did we decide at the Acme sync?")], override=None
+        )
+        sentinel = object()
+        assert (
+            cast(Any, router).wrap_model_call(request, lambda r: sentinel) is sentinel
+        )  # the model decides
+        weather = SimpleNamespace(
+            messages=[HumanMessage("what is the weather in Berlin")], override=None
+        )
+        assert (
+            cast(Any, router).wrap_model_call(weather, lambda r: sentinel).tool_calls[0]["name"]
+            == "research"
+        )

@@ -31,7 +31,6 @@ from tzara.memory import PersonalMemory
 from tzara.server.files import NameStore, ServerInfo, ServerInfoFile, ServerPaths, TokenStore
 from tzara.server.service import (
     ChatService,
-    ChoicesEvent,
     DoneEvent,
     ServiceBusy,
     ServiceNotReady,
@@ -64,8 +63,6 @@ class ChatRequest(BaseModel):
 
     message: str
     context: ScreenBody | None = None
-    # The question the "Search online" button searches for; the message is then only its label.
-    search_for: str | None = Field(default=None, max_length=20_000)
     # Where the user is (a city and country), from the Mac's location, if they allowed it.
     place: str = Field(default="", max_length=200)
 
@@ -668,9 +665,7 @@ class TzaraServer:
 
         try:
             context = ScreenContext(**body.context.model_dump()) if body.context else None
-            turn = self._service.start_turn(
-                body.message, sink, context, body.search_for, body.place.strip()
-            )
+            turn = self._service.start_turn(body.message, sink, context, body.place.strip())
         except ServiceNotReady as error:
             raise HTTPException(status_code=503, detail=str(error)) from error
         except ServiceBusy as error:
@@ -766,8 +761,6 @@ class TzaraServer:
             name, data = "status", {"text": event.text}
         elif isinstance(event, ToolEvent):
             name, data = "tool", {"name": event.name, "state": event.state}
-        elif isinstance(event, ChoicesEvent):
-            name, data = "choices", {"options": event.options}
         elif isinstance(event, DoneEvent):
             name = "done"
             data = {

@@ -1,7 +1,7 @@
 import pytest
 
 from test_agent import agent_with_fake_model, human_texts
-from tzara.agent.events import AssistantDelta, Choices
+from tzara.agent.events import AssistantDelta
 from tzara.agent.screen import Route, ScreenBlock, ScreenContext, ScreenPage
 from tzara.config import ScreenSettings
 from tzara.prompts import Prompts
@@ -443,27 +443,20 @@ class TestTheModelDecidesWhenTheRulesAreUnsure:
         "Microsoft Outlook", "Re: Invoice", visible="From: Anna\nPlease pay by Friday."
     )
 
-    def run(self, agent, text, context=None, search_for=None):
-        return list(agent.run(text, context or self.ASKED, search_for))
+    def run(self, agent, text, context=None):
+        return list(agent.run(text, context or self.ASKED))
 
     def test_an_unclear_question_is_not_refused_or_asked_about_it_goes_to_the_model_with_the_screen(
         self,
     ):
         agent, model = agent_with_fake_model("Canberra.")
-        events = self.run(agent, "what amount is due and when")
-        assert not any(isinstance(e, Choices) for e in events)
+        self.run(agent, "what amount is due and when")
         assert agent._turn_route == "skip"  # no search is forced; the model has the tools
         assert "Please pay by Friday." in human_texts(model.seen_messages[-1])[-1]
 
-    def test_the_search_button_searches_for_the_question_it_carries(self):
-        agent, _ = agent_with_fake_model("Canberra.")
-        self.run(agent, "Search online.", search_for="what is the capital of Australia")
-        assert agent._turn_route == ("search", "what is the capital of Australia")
-
     def test_a_question_about_the_screen_is_not_searched_and_not_asked_about(self):
         agent, model = agent_with_fake_model("Anna wants payment by Friday.")
-        events = self.run(agent, "when does she want payment?")
-        assert not any(isinstance(e, Choices) for e in events)
+        self.run(agent, "when does she want payment?")
         assert agent._turn_route == "skip"
         assert "Please pay by Friday." in human_texts(model.seen_messages[-1])[-1]
 

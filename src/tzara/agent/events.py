@@ -73,31 +73,4 @@ class RunCompleted:
     characters: int
 
 
-@dataclass(frozen=True)
-class Choice:
-    """One button offered under a reply.
-
-    Attributes:
-        label: The word or two on the button.
-        message: What pressing it sends, as the user's next message.
-        search_for: The question to search the web for, if pressing it should search; the
-            message itself is then only a label.
-    """
-
-    label: str
-    message: str
-    search_for: str | None = None
-
-
-@dataclass(frozen=True)
-class Choices:
-    """Buttons under the reply, for a question the reply asks.
-
-    Attributes:
-        options: The buttons, in order.
-    """
-
-    options: tuple[Choice, ...]
-
-
-AgentEvent = AssistantDelta | ToolStarted | ToolCompleted | Progress | Choices | RunCompleted
+AgentEvent = AssistantDelta | ToolStarted | ToolCompleted | Progress | RunCompleted

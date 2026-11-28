@@ -83,18 +83,6 @@ struct BarView: View {
                 StepsList(steps: last.steps, thinking: model.activity)
             } else {
                 if !last.text.isEmpty { MarkdownView(text: last.text) }
-                if !last.choices.isEmpty, model.phase == .idle {
-                    HStack(spacing: 6) {
-                        ForEach(last.choices, id: \.label) { choice in
-                            Button(choice.label) { model.choose(choice) }
-                                .buttonStyle(.plain)
-                                .font(.callout.weight(.medium))
-                                .padding(.horizontal, 12)
-                                .padding(.vertical, 5)
-                                .background(Color.accentColor.opacity(0.25), in: Capsule())
-                        }
-                    }
-                }
             }
         }
     }

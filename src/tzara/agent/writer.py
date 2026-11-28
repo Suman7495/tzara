@@ -243,6 +243,9 @@ class InlineWriter:
             if exact is not None:
                 current = exact
                 continue
+            if TextEdit.target_missing(step, current):
+                logger.info("write: the step %r names something the text does not have", step[:60])
+                continue
             revised = self._revise(place, context, system, step, current)
             if revised is None:
                 logger.info("write: could not apply the step %r", step[:60])
@@ -256,6 +259,10 @@ class InlineWriter:
         """The model's version of ``text`` with one change made, or ``None`` if it made none."""
         prompts = self._config.prompts
         limit = self._config.write.max_output_chars
+        if re.search(
+            r"\b(?:shorter|shorten|concise|trim|tighten|brief|cut)\b", step, re.IGNORECASE
+        ):
+            step += " (cut it by about a third)"
         for kind in ("edit", "edit_retry"):
             task = prompts.write_tasks[kind].format(text=self._numbered(text), instruction=step)
             written = self.clean(

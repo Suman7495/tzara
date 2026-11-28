@@ -285,8 +285,7 @@ final class BarController {
         if state.showExchange, let last, last.role != .user {
             // The measured height of the content once the view has reported it, else an estimate.
             let estimate = BarLayout.answerHeight(
-                characters: last.text.count + (model.notice?.count ?? 0), steps: last.steps.count,
-                hasButtons: !last.choices.isEmpty)
+                characters: last.text.count + (model.notice?.count ?? 0), steps: last.steps.count)
             answer = state.contentHeight > 0
                 ? min(BarLayout.maximumAnswer, max(BarLayout.minimumAnswer, state.contentHeight))
                 : estimate
@@ -396,11 +395,6 @@ final class BarController {
 
     /// Sends a message from the bar, for `--bar-ask`.
     func ask(_ text: String) { suggest(text) }
-
-    func showDemoChoices() {
-        model.showDemoChoices()
-        state.showExchange = true
-    }
 
     /// Draws the bar into a PNG file, to look at its layout without the Screen Recording permission.
     func snapshot(to path: String) {

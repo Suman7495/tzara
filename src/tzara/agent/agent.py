@@ -244,7 +244,6 @@ class Tzara:
         self,
         text: str,
         context: ScreenContext | None = None,
-        search_for: str | None = None,
         place: str = "",
     ) -> Generator[AgentEvent]:
         """Answer one user message, as typed events in the order they happen.
@@ -259,8 +258,6 @@ class Tzara:
             text: The user's message.
             context: What the user was looking at, to be put in front of the message for the
                 model. It is not part of what the user said: history shows ``text`` alone.
-            search_for: A question to search the web for whatever the message says. It is what
-                the "Search online" button sends: the message is only its label.
             place: Where the user is now (a city), if their Mac said so. It answers "where am I",
                 is the place for "weather" and "near me", and is not told to the model otherwise.
 
@@ -273,7 +270,7 @@ class Tzara:
         self._turn_place = place.strip()
         self._turn_text = text
         self._turn_screen = context
-        if self._commands is not None and search_for is None:
+        if self._commands is not None:
             reply = self._commands.handle(
                 text,
                 context.selection if context else "",
@@ -283,8 +280,8 @@ class Tzara:
             if reply is not None:
                 yield from self._say(text, reply)
                 return
-        self._turn_route = ("search", search_for) if search_for else None
-        if search_for is None and self._turn_place:
+        self._turn_route = None
+        if self._turn_place:
             local = self._localised(text)
             if local != text:
                 self._turn_route = ("search", local)
@@ -302,18 +299,16 @@ class Tzara:
             open_in = self._app_open(context)
             if open_in and self._about_open_page(text, context):
                 self._turn_open_page = (open_in, context.address)
-                if search_for is None:
-                    self._turn_route = "skip"  # about the open page, not the web
+                self._turn_route = "skip"  # about the open page, not the web
             if not open_in and self._screen_page.wanted(text, context):
                 yield Progress(self._config.prompts.screen_reading)
                 page, page_note = self._screen_page.read(context)
             unchanged = self._selection_seen(context)
             typing = visible = ""
             route = Route.DEFAULT
-            if search_for is None:
-                route = self._screen_page.route(
-                    text, context, self._question_rules.needs_sources(text), bool(page)
-                )
+            route = self._screen_page.route(
+                text, context, self._question_rules.needs_sources(text), bool(page)
+            )
             if route is Route.SCREEN:
                 self._turn_route = "skip"
             elif route is Route.WEB:
@@ -367,7 +362,7 @@ class Tzara:
         self._activity.links.collect(shown_to_model)
         checked = _CheckedReply(LinkGuard(self._activity.links.trusts), started, self._closing_note)
         self._activity.listen(inbox.put)
-        if self._personal is not None and search_for is None:
+        if self._personal is not None:
             for fact in self._personal.capture.learn(text):
                 yield Progress(self._config.prompts.learned.format(fact=fact.text))
         stream = self._agent.stream_events(
@@ -464,6 +459,9 @@ class Tzara:
         """
         if not reply.strip():
             logger.warning("the reply was empty: showing the stand-in sentence")
+            if self._activity.tools_run:
+                names = ", ".join(sorted(t.split("__")[-1] for t in self._activity.tools_run))
+                return self._config.prompts.empty_reply_after_tools.format(tools=names)
             return self._config.prompts.empty_reply
         note = self._unconfirmed_change(reply)
         if note:
@@ -477,11 +475,16 @@ class Tzara:
         here, in code, from the words of the reply and the tools that ran: no model request. Left
         alone if any tool ran (such as ``remember``), since "I've added that" may then be true.
         """
+        claims = re.search(self._config.mcp.claim_pattern, reply, re.IGNORECASE)
+        failed = next((a for a in self._activity.actions if a.failed), None)
+        if claims and failed is not None:
+            # A tool reported an error, and the reply says it was done anyway.
+            return self._config.prompts.failed_step.format(
+                tool=failed.tool.split("__")[-1], error=failed.result.removeprefix("failed: ")[:120]
+            )
         if self._activity.tools_run:
             return ""
-        if re.search(self._config.mcp.claim_pattern, reply, re.IGNORECASE):
-            return self._config.prompts.unconfirmed_change
-        return ""
+        return self._config.prompts.unconfirmed_change if claims else ""
 
     def handle(self, text: str) -> Generator[str]:
         """Stream the text of the reply to one user message.
@@ -823,6 +826,11 @@ class Tzara:
                     report=self._activity.report,
                     writing=self._config.prompts.router_writing,
                     route=lambda: self._turn_route,
+                    apps_connected=lambda: self._app_rules,
+                    clearly_web=lambda text: (
+                        self._question_rules.topical(text)
+                        or self._screen_page.asks_for_the_web(text)
+                    ),
                 ),
             )
         searches = self._app_searches()

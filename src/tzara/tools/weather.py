@@ -163,7 +163,11 @@ class WeatherReport:
         candidates.append(text[: trigger.start()])
         for candidate in candidates:
             words = [word.strip("'\"") for word in re.findall(r"[^\W\d_][\w'.-]*", candidate)]
-            kept = [word for word in words if word and word not in self.NOISE]
+            kept = [
+                word
+                for word in words
+                if word and word.replace("'", "") not in self.NOISE and word not in self.NOISE
+            ]
             if kept:
                 return " ".join(kept[-3:]).title()[:60]
         return None

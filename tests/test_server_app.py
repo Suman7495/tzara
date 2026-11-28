@@ -238,12 +238,6 @@ class TestScreenContext:
             "From: Anna",
         )
 
-    def test_the_search_button_sends_the_question_to_search_for(self, build, agents):
-        client, _, _ = build()
-        body = {"message": "Search online.", "search_for": "what is the capital of Australia"}
-        assert client.post("/v1/chat", headers=AUTH, json=body).status_code == 200
-        assert agents.created[0].searches == ["what is the capital of Australia"]
-
     def test_a_message_without_context_has_none(self, build, agents):
         client, _, _ = build()
         client.post("/v1/chat", headers=AUTH, json={"message": "hi"})

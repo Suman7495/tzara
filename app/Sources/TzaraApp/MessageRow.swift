@@ -11,8 +11,6 @@ struct MessageRow: View {
     let writing: Bool
     /// What the assistant is doing right now, such as searching the web.
     let activity: String?
-    /// Called when one of the message's buttons is pressed.
-    let onChoose: (ChatChoice) -> Void
     /// The dashboard's look: the assistant's words sit on the page with no bubble, the user's in a
     /// soft one, and the copy button is under the answer.
     var plain = false
@@ -53,19 +51,6 @@ struct MessageRow: View {
                     MarkdownView(text: message.text)
                 } else {
                     Text(message.text).textSelection(.enabled)
-                }
-            }
-            // A question the assistant asks ("Search online?") comes with its answers as buttons.
-            if message.role == .assistant, !message.choices.isEmpty, !writing {
-                HStack(spacing: 6) {
-                    ForEach(message.choices, id: \.label) { choice in
-                        Button(choice.label) { onChoose(choice) }
-                            .buttonStyle(.plain)
-                            .font(.callout.weight(.medium))
-                            .padding(.horizontal, 12)
-                            .padding(.vertical, 5)
-                            .background(Color.accentColor.opacity(0.25), in: Capsule())
-                    }
                 }
             }
         }

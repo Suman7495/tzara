@@ -785,7 +785,9 @@ class McpSettings:
         r"\bi(?:'ve| have)?\s+(?:now\s+|just\s+|successfully\s+|already\s+)?"
         r"(?:added|created|updated|written|wrote|sent|deleted|saved|posted|edited|appended|inserted|"
         r"taken care of|handled|confirmed|booked|scheduled|paid|completed|finished|replied|"
-        r"forwarded|archived|moved|renamed|cancelled|canceled|set up|arranged)\b"
+        r"forwarded|archived|moved|renamed|cancelled|canceled|set up|arranged|marked)\b"
+        r"|\b(?:has|have|had) been (?:successfully |now )?(?:marked|added|updated|created|changed|"
+        r"deleted|removed|sent|saved|moved|renamed|booked|scheduled)\b"
     )
     max_description_chars: int = 200
     promise_pattern: str = (
@@ -795,13 +797,19 @@ class McpSettings:
     tool_hints: Mapping[str, str] = field(
         default_factory=lambda: {
             "notion-update-page": (
-                "Change a Notion page. To add text: command=insert_content, page_id=the page's "
-                "address, content=the text in Markdown (it is added at the end). To fix a phrase: "
-                "command=update_content. Never use replace_content unless asked."
+                "Change an EXISTING Notion page. To add text: command=insert_content, page_id=the "
+                "page's address, content=the text in Markdown (added at the end). To change a "
+                "line: "
+                "command=update_content, content_updates=[{old_str: the exact old text, "
+                "new_str: the new text}] (fetch the page first to copy the text exactly). To "
+                "restructure: "
+                "command=replace_content with the whole new text. Never create a new page to edit "
+                "one."
             ),
             "notion-create-pages": (
-                "Create Notion pages. Give pages=[{properties:{title:...}, content:Markdown}] and "
-                "parent={page_id:...} (omit parent to create a private page)."
+                "Create a NEW Notion page only when the user asks for a new page. Give "
+                "pages=[{properties:{title:...}, content:Markdown}]. To change an existing page "
+                "use notion-update-page."
             ),
             "notion-fetch": "Read a Notion page or database. id=the page's address or id.",
         }
