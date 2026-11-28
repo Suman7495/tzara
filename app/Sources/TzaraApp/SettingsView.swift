@@ -115,6 +115,20 @@ struct SettingsView: View {
                 }
             }
         }
+        Card(title: "Where you are", note: "Only the city and country are used, never your exact position. macOS finds the city name with Apple\u{2019}s service.") {
+            Line(title: "Use my location", detail: "So \u{201C}what\u{2019}s the weather\u{201D}, \u{201C}near me\u{201D} and \u{201C}where am I\u{201D} know your city.", divider: settings.useLocation && settings.locationDenied) {
+                Toggle("", isOn: $settings.useLocation).labelsHidden().toggleStyle(.switch)
+            }
+            if settings.useLocation, settings.locationDenied {
+                Line(title: "Location is off for Tzara", detail: "Allow it under Privacy & Security \u{2192} Location Services.", divider: false) {
+                    Button("Open Settings") {
+                        if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_LocationServices") {
+                            NSWorkspace.shared.open(url)
+                        }
+                    }
+                }
+            }
+        }
         Card(title: "Writing in other apps", note: "Tap the key in a text field and say what you want. Nothing is written until you ask, and nothing is ever sent. Enter applies, Esc closes, \u{2318}Z undoes.") {
             Line(title: "Write with a key", detail: "Open the bar in any text field: LinkedIn, Slack, Discord, Teams, Outlook\u{2026}", divider: settings.writeInOtherApps) {
                 Toggle("", isOn: $settings.writeInOtherApps).labelsHidden().toggleStyle(.switch)

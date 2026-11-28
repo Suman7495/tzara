@@ -1,8 +1,9 @@
 import SwiftUI
 import TzaraCore
 
-/// The small glass bar: an input line, a chip for what Tzara can see, and, once there is something
-/// to say, the answer or how a write went.
+/// The bar: not one box but up to three pieces that float apart on a clear panel. The response is a plain
+/// chat bubble; under it come small suggestion pills; at the bottom the prompt pill. While Tzara answers
+/// only the bubble is shown.
 struct BarView: View {
     @ObservedObject var model: ChatModel
     @ObservedObject var state: BarState
@@ -11,28 +12,16 @@ struct BarView: View {
     let onSuggest: (String) -> Void
     @FocusState private var focused: Bool
 
+    private static let bubbleRadius: CGFloat = 18
+
     var body: some View {
-        // Three looks: the prompt; only the response while Tzara answers; the response with the prompt
-        // below it once it has finished. The response sits above the input, so it grows upward.
-        VStack(spacing: 0) {
-            if let height = state.answerHeight {
-                answer.frame(height: height)
-                if state.showsInput { Divider() }
-            }
-            if state.showsInput {
-                if state.answerHeight == nil, let context = model.screen { chip(context) }
-                inputRow
-            }
+        VStack(spacing: BarLayout.gap) {
+            if let height = state.answerHeight { bubble.frame(height: height) }
+            if state.showsInput, !offered.isEmpty { suggestionRow }
+            if state.showsInput { prompt }
         }
         .frame(width: BarLayout.width)
         .frame(maxHeight: .infinity, alignment: .bottom)
-        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .strokeBorder(
-                    LinearGradient(
-                        colors: [.white.opacity(0.35), .white.opacity(0.08)], startPoint: .top, endPoint: .bottom),
-                    lineWidth: 1))
         .environment(\.controlActiveState, .key)
         .tint(.blue)
         .onAppear { focused = true }
@@ -41,7 +30,119 @@ struct BarView: View {
         .onChange(of: state.showsInput) { shown in if shown { focused = true } }
     }
 
-    // MARK: - Input
+    /// A piece of glass: material with a light rim.
+    private func glass(_ radius: CGFloat) -> some View {
+        RoundedRectangle(cornerRadius: radius, style: .continuous)
+            .fill(.ultraThinMaterial)
+            .overlay(
+                RoundedRectangle(cornerRadius: radius, style: .continuous)
+                    .strokeBorder(
+                        LinearGradient(
+                            colors: [.white.opacity(0.35), .white.opacity(0.08)], startPoint: .top,
+                            endPoint: .bottom),
+                        lineWidth: 1))
+    }
+
+    // MARK: - The response bubble
+
+    private var bubble: some View {
+        ScrollViewReader { proxy in
+            ScrollView {
+                VStack(alignment: .leading, spacing: 8) {
+                    if let status = state.status {
+                        Label(status, systemImage: state.writing ? "pencil.line" : "checkmark.circle")
+                            .font(.callout).foregroundStyle(.secondary)
+                    }
+                    if state.showExchange { content }
+                    if let notice = model.notice { Text(notice).font(.caption).foregroundStyle(.secondary) }
+                    Color.clear.frame(height: 1).id("end")
+                }
+                .padding(.leading, 16)
+                .padding(.trailing, 36)  // room for the copy button
+                .padding(.vertical, 12)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                // How tall the content really is: the bubble is made as tall as it needs, no taller.
+                .background(
+                    GeometryReader { proxy in
+                        Color.clear.preference(key: ContentHeightKey.self, value: proxy.size.height)
+                    })
+            }
+            .onPreferenceChange(ContentHeightKey.self) { height in
+                DispatchQueue.main.async { if abs(state.contentHeight - height) > 0.5 { state.contentHeight = height } }
+            }
+            .onChange(of: model.messages) { _ in DispatchQueue.main.async { proxy.scrollTo("end", anchor: .bottom) } }
+        }
+        .background(glass(Self.bubbleRadius))
+        .overlay(alignment: .topTrailing) { copyButton }
+    }
+
+    /// The latest message only: what Tzara is doing while it works, then what it said.
+    @ViewBuilder private var content: some View {
+        if let last = model.messages.last, last.role != .user {
+            if last.role == .activity {
+                StepsList(steps: last.steps, thinking: model.activity)
+            } else {
+                if !last.text.isEmpty { MarkdownView(text: last.text) }
+                if !last.choices.isEmpty, model.phase == .idle {
+                    HStack(spacing: 6) {
+                        ForEach(last.choices, id: \.label) { choice in
+                            Button(choice.label) { model.choose(choice) }
+                                .buttonStyle(.plain)
+                                .font(.callout.weight(.medium))
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 5)
+                                .background(Color.accentColor.opacity(0.25), in: Capsule())
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder private var copyButton: some View {
+        if state.showExchange, model.phase == .idle, let last = model.messages.last, last.role == .assistant, !last.text.isEmpty {
+            Button {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(last.text, forType: .string)
+            } label: {
+                Image(systemName: "doc.on.doc").font(.caption).frame(width: 24, height: 24).contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(.secondary)
+            .padding(6)
+            .help("Copy")
+            .accessibilityLabel("Copy the answer")
+        }
+    }
+
+    // MARK: - Suggestions
+
+    private var offered: [Suggestion] { state.showExchange ? model.suggestions : model.screenSuggestions }
+
+    private var suggestionRow: some View {
+        HStack(spacing: 6) {
+            ForEach(offered) { item in
+                Button(item.label) { onSuggest(item.message) }
+                    .buttonStyle(.plain)
+                    .font(.callout)
+                    .padding(.horizontal, 12)
+                    .frame(height: BarLayout.suggestionHeight - 4)
+                    .background(glass(16))
+            }
+            Spacer(minLength: 0)
+        }
+        .frame(height: BarLayout.suggestionHeight)
+    }
+
+    // MARK: - The prompt
+
+    private var prompt: some View {
+        VStack(spacing: 0) {
+            if state.answerHeight == nil, let context = model.screen { chip(context) }
+            inputRow
+        }
+        .background(glass(22))
+    }
 
     private var inputRow: some View {
         HStack(spacing: 8) {
@@ -65,7 +166,7 @@ struct BarView: View {
                     .accessibilityLabel("Send")
             }
         }
-        .padding(.horizontal, 14)
+        .padding(.horizontal, 16)
         .frame(height: BarLayout.inputHeight)
     }
 
@@ -82,59 +183,14 @@ struct BarView: View {
         }
         .font(.caption)
         .foregroundStyle(.secondary)
-        .padding(.horizontal, 14)
+        .padding(.horizontal, 16)
         .frame(height: BarLayout.chipHeight)
+        .padding(.top, 2)
     }
+}
 
-    // MARK: - Answer
 
-    private var answer: some View {
-        ScrollViewReader { proxy in
-            ScrollView {
-                VStack(alignment: .leading, spacing: 8) {
-                    if let status = state.status {
-                        Label(status, systemImage: state.writing ? "pencil.line" : "checkmark.circle")
-                            .font(.callout).foregroundStyle(.secondary)
-                    }
-                    if state.showExchange { latest }
-                    if let notice = model.notice {
-                        Text(notice).font(.caption).foregroundStyle(.secondary)
-                    }
-                    if !(state.showExchange ? model.suggestions : model.screenSuggestions).isEmpty { suggestionRow }
-                    Color.clear.frame(height: 1).id("end")
-                }
-                .padding(12)
-            }
-            .onChange(of: model.messages) { _ in
-                DispatchQueue.main.async { proxy.scrollTo("end", anchor: .bottom) }
-            }
-        }
-    }
-
-    /// Only the latest message: what Tzara is doing while it works, then what it answered. Earlier
-    /// ones are in the dashboard.
-    @ViewBuilder private var latest: some View {
-        if let last = model.messages.last, last.role != .user {
-            MessageRow(
-                message: last,
-                waiting: model.phase == .waiting,
-                writing: model.phase != .idle,
-                activity: model.activity,
-                onChoose: model.choose)
-        }
-    }
-
-    private var suggestionRow: some View {
-        HStack(spacing: 6) {
-            ForEach(state.showExchange ? model.suggestions : model.screenSuggestions) { item in
-                Button(item.label) { onSuggest(item.message) }
-                    .buttonStyle(.plain)
-                    .font(.callout)
-                    .padding(.horizontal, 11)
-                    .padding(.vertical, 5)
-                    .background(Color.primary.opacity(0.08), in: Capsule())
-            }
-            Spacer(minLength: 0)
-        }
-    }
+private struct ContentHeightKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = max(value, nextValue()) }
 }

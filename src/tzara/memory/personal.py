@@ -11,6 +11,7 @@ from tzara.memory.database import MemoryDatabase
 from tzara.memory.episodes import ConversationLog
 from tzara.memory.facts import FactStore
 from tzara.memory.styles import WritingSamples
+from tzara.memory.tasks import TaskMemory
 
 
 class PersonalMemory:
@@ -32,6 +33,7 @@ class PersonalMemory:
         self.capture = FactCapture(self.facts, settings)
         self.activity = ActivityLog(database, settings)
         self.styles = WritingSamples(database, settings)
+        self.tasks = TaskMemory(database)
 
     @classmethod
     def open(cls, settings: MemorySettings, directory: Path | None) -> PersonalMemory | None:
@@ -52,6 +54,7 @@ class PersonalMemory:
         self.log.clear()
         self.activity.clear()
         self.styles.clear()
+        self.tasks.clear()
 
     def close(self) -> None:
         """Close the database."""

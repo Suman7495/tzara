@@ -66,6 +66,8 @@ class ChatRequest(BaseModel):
     context: ScreenBody | None = None
     # The question the "Search online" button searches for; the message is then only its label.
     search_for: str | None = Field(default=None, max_length=20_000)
+    # Where the user is (a city and country), from the Mac's location, if they allowed it.
+    place: str = Field(default="", max_length=200)
 
     @field_validator("message")
     @classmethod
@@ -617,7 +619,7 @@ class TzaraServer:
             raise HTTPException(status_code=409, detail=str(error)) from error
         return Response(status_code=204)
 
-    async def write(self, body: WriteBody) -> dict[str, str]:
+    async def write(self, body: WriteBody) -> dict[str, Any]:
         """Write text for a field of another app: what to put there and what it replaces.
 
         Raises:
@@ -639,6 +641,7 @@ class TzaraServer:
             "mode": result.mode,
             "place": result.place,
             "replaces": result.replaces,
+            "changed": result.changed,
         }
 
     async def chat(self, body: ChatRequest) -> StreamingResponse:
@@ -665,7 +668,9 @@ class TzaraServer:
 
         try:
             context = ScreenContext(**body.context.model_dump()) if body.context else None
-            turn = self._service.start_turn(body.message, sink, context, body.search_for)
+            turn = self._service.start_turn(
+                body.message, sink, context, body.search_for, body.place.strip()
+            )
         except ServiceNotReady as error:
             raise HTTPException(status_code=503, detail=str(error)) from error
         except ServiceBusy as error:

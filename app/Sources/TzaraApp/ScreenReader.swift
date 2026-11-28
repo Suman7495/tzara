@@ -296,6 +296,51 @@ struct ScreenReader: Sendable {
         return CFEqual(now, field.element)
     }
 
+    /// Puts the user back in `field`: brings its app and window forward and gives it the keyboard.
+    /// For a write that finishes after the user clicked elsewhere, which must still land in the
+    /// window it was asked for. Returns whether a text field of that window has the keyboard again.
+    func bringBack(_ field: Field, in app: NSRunningApplication) async -> Bool {
+        let root = AXUIElementCreateApplication(app.processIdentifier)
+        AXUIElementSetMessagingTimeout(root, Self.answerTimeout)
+        let window = Self.element(field.element, kAXWindowAttribute)
+        for attempt in 0..<12 {  // about 1.5 seconds
+            app.activate(options: [.activateIgnoringOtherApps])
+            AXUIElementSetAttributeValue(root, kAXFrontmostAttribute as CFString, kCFBooleanTrue)
+            if let window {
+                AXUIElementSetAttributeValue(window, kAXMainAttribute as CFString, kCFBooleanTrue)
+                AXUIElementPerformAction(window, kAXRaiseAction as CFString)
+            }
+            AXUIElementSetAttributeValue(field.element, kAXFocusedAttribute as CFString, kCFBooleanTrue)
+            try? await Task.sleep(nanoseconds: 125_000_000)
+            if isUsable(field, in: app, window: window) { return true }
+            if attempt == 11 { FileLog.shared.info("write: bring back failed: \(describeFocus(in: app))") }
+        }
+        return false
+    }
+
+    /// The same field has the keyboard, or another text field of the same window (a web view makes a
+    /// new element each time it is looked at): either way the paste goes where the user was writing.
+    private func isUsable(_ field: Field, in app: NSRunningApplication, window: AXUIElement?) -> Bool {
+        guard app.isActive else { return false }
+        if isStillFocused(field, in: app) { return true }
+        let root = AXUIElementCreateApplication(app.processIdentifier)
+        AXUIElementSetMessagingTimeout(root, Self.answerTimeout)
+        guard let now = Self.element(root, kAXFocusedUIElementAttribute),
+            let role = Self.text(now, kAXRoleAttribute),
+            Self.fieldRoles.contains(role) || Self.containerRoles.contains(role),
+            let window, let nowWindow = Self.element(now, kAXWindowAttribute)
+        else { return false }
+        return CFEqual(window, nowWindow)
+    }
+
+    /// What has the keyboard in `app`, in words with no text, for the log.
+    private func describeFocus(in app: NSRunningApplication) -> String {
+        let root = AXUIElementCreateApplication(app.processIdentifier)
+        AXUIElementSetMessagingTimeout(root, Self.answerTimeout)
+        let role = Self.element(root, kAXFocusedUIElementAttribute).flatMap { Self.text($0, kAXRoleAttribute) } ?? "nothing"
+        return "app active \(app.isActive), focused element \(role)"
+    }
+
     /// The text of `field` now (for checking what was written), or empty.
     func currentValue(of field: Field) -> String {
         Self.text(field.element, kAXValueAttribute) ?? ""

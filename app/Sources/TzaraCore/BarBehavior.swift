@@ -26,7 +26,8 @@ public enum BarIntent: Equatable, Sendable {
         "what", "why", "how", "who", "when", "where", "which", "is ", "are ", "do ", "does ", "did ",
         "can ", "could ", "should ", "would ", "will ", "tell me", "show me", "explain", "summar",
         "define", "describe", "analy", "meaning", "mean ", "tldr", "tl;dr", "eli5", "review", "check ",
-        "search", "find", "look up", "open ", "remember", "forget", "list ", "compare",
+        "search", "find", "look up", "open ", "remember", "forget", "list ", "compare", "memori", "note ",
+        "make a note", "keep in mind", "don't forget", "do not forget",
     ]
 
     /// Polite words in front of a request, ignored when deciding.
@@ -58,26 +59,35 @@ public enum BarIntent: Equatable, Sendable {
     }
 }
 
-/// How tall the bar is.
+/// How tall the bar is. It is not one box: the response is a bubble of its own, the suggestions a row
+/// of small pills, and the prompt a pill, each separated by a gap and each drawn on its own, so the
+/// panel itself has no background.
 public enum BarLayout {
     public static let width: CGFloat = 420
-    public static let inputHeight: CGFloat = 48
-    public static let chipHeight: CGFloat = 30
-    public static let minimumAnswer: CGFloat = 70
-    public static let maximumAnswer: CGFloat = 300
+    public static let inputHeight: CGFloat = 46
+    public static let chipHeight: CGFloat = 26
+    public static let suggestionHeight: CGFloat = 32
+    public static let gap: CGFloat = 8
+    public static let minimumAnswer: CGFloat = 52
+    public static let maximumAnswer: CGFloat = 320
 
-    /// The height of the answer area for `characters` of text and `steps` lines of what was done:
+    /// The height of the response bubble for `characters` of text and `steps` lines of what was done:
     /// as much as it needs, within limits, past which it scrolls.
     public static func answerHeight(characters: Int, steps: Int, hasButtons: Bool) -> CGFloat {
-        let lines = max(1, (characters + 49) / 50)
-        let needed = 28 + CGFloat(lines) * 19 + CGFloat(steps) * 20 + (hasButtons ? 34 : 0)
+        let lines = max(1, (characters + 45) / 46)
+        let needed = 24 + CGFloat(lines) * 19 + CGFloat(steps) * 22 + (hasButtons ? 38 : 0)
         return min(maximumAnswer, max(minimumAnswer, needed))
     }
 
-    /// The whole bar. It is one of three things: the prompt (input line and the chip for what Tzara can
-    /// see), only the response (while Tzara is answering), or the response with the prompt below it
-    /// (once it has finished).
-    public static func height(hasChip: Bool, answer: CGFloat?, showsInput: Bool = true) -> CGFloat {
-        (showsInput ? inputHeight + (hasChip ? chipHeight : 0) : 0) + (answer ?? 0)
+    /// The whole panel, top to bottom: the response bubble, the suggestions, the prompt pill (with the
+    /// chip for what Tzara can see in it). While Tzara answers, only the bubble is shown.
+    public static func height(
+        hasChip: Bool, answer: CGFloat?, showsInput: Bool = true, suggestions: Bool = false
+    ) -> CGFloat {
+        var parts: [CGFloat] = []
+        if let answer { parts.append(answer) }
+        if suggestions, showsInput { parts.append(suggestionHeight) }
+        if showsInput { parts.append(inputHeight + (hasChip ? chipHeight : 0)) }
+        return parts.reduce(0, +) + gap * CGFloat(max(parts.count - 1, 0))
     }
 }

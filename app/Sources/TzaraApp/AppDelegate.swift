@@ -89,6 +89,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let text = arguments[flag + 1]
             DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) { bar.ask(text) }
         }
+        // `--bar-hide-after SECONDS` puts the bar away, as a click elsewhere does, to see it pop up with the answer.
+        if let flag = arguments.firstIndex(of: "--bar-hide-after"), flag + 1 < arguments.count,
+            let seconds = Double(arguments[flag + 1])
+        {
+            DispatchQueue.main.asyncAfter(deadline: .now() + seconds) { bar.hide() }
+        }
         // `--demo-choices` shows a reply that asks "Search online?" with its buttons.
         if arguments.contains("--demo-choices") {
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { bar.showDemoChoices() }

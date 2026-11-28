@@ -158,7 +158,7 @@ macOS app is a thin client of it. The endpoints are in the [README](README.md#lo
   (`ChatModel`, which still holds the conversation, screen context, steps, choices). It is a **silent companion** with three looks: the **prompt** (input, plus the chip), **only the response** as a bubble while Tzara answers (the input is hidden), then the response
   with **the prompt again** below it (`BarState.showsInput`, `BarLayout.height`). It is **movable** (drag the background; not remembered) and **goes away when you click another window
   or switch app** (a global mouse-down monitor and the app-activation notification in `BarController`; the bar never takes the front, so clicks elsewhere reach those apps); the key brings it back.
-  There is no idle timer and no pin. A write hides the bar for
+  There is no idle timer and no pin. **The bar is not one box**: the response is a bubble of its own, the suggestions small pills, the prompt a pill, each glass piece on a clear panel with `BarLayout.gap` between them (a chat inside a box looked wrong); the bubble is as tall as its measured content (`ContentHeightKey` -> `BarState.contentHeight`). **A reply asked from the bar that finishes while the bar is hidden makes it pop up** (`BarController.popUp`: `orderFrontRegardless`, never the keyboard); asked from the dashboard it does not. Test aids: `--bar-ask TEXT`, `--bar-hide-after SECONDS`. A write hides the bar for
   the paste so Cmd+V reaches the field, then brings it back without taking the keyboard.
 - **A reply is several boxes, not one blob** (`ChatModel.beginActivity/beginAnswer/endTurn`): what Tzara does (steps with ticks) is an `activity` message, what it says an
   `assistant` message, in the order they happen (words, then steps, then words each get their own box; an activity box that never got a step is removed). The bar
@@ -486,11 +486,44 @@ container with a text cursor and a settable value; never a password field, check
   panel (a `ChatBoxPanel`: non-activating, takes typing, the field keeps its place) near the field; Enter sends `instruction` with the request
   (`edit`: change the text as asked; `guided`: write from the conversation as asked), the bar hides while text is pasted, then returns for the next round; Esc ends it.
 - **Pasting** (`Paster`): clipboard (marked concealed, restored after) plus Command+A/V found in the current layout; paste, not typing, because a typed
-  line break sends a chat message. It checks the same field still has the keyboard first, else leaves the text on the clipboard. Esc cancels, Cmd+Z undoes.
+  line break sends a chat message. **A write carries on in the window it was asked for**: clicking elsewhere hides the bar but not the write; if the field no longer has the keyboard when the text is ready,
+  `ScreenReader.bringBack` brings its app and window forward and focuses the element (AXFrontmost, AXRaise, AXFocused), the text is pasted, and the user's previous app is activated again. If that fails the text is left on the clipboard and the bar pops up to say so. Untested against real apps (log line: "the user had moved; the field was brought back"). Esc cancels, Cmd+Z undoes.
 - **The target is the app in front when Enter is pressed**, not when the bar opened (the bar never takes the front, and the user may have left that app). `NSHostingView.sizingOptions = []`: left alone, the hosting view resized the window from its top-left corner and the bar flowed down the screen.
 - **Tests must never type into the user's apps.** `Tzara --background --write-now SECONDS --only-app NAME` writes only if that app is in front. An early
   run without that guard pasted into the user's Chrome (a checkbox had focus: now refused) and TextEdit had not come to the front. Verified: field read,
   server answer (7 s), paste attempted; the paste in a real chat app (Slack, Discord, Teams, LinkedIn) is NOT verified.
+
+## What the agent does in code, not by asking the model (qwen3:8b will not do these)
+
+The loop is See (screen context, field, window text) -> Understand (`BarIntent`, memory, the last task) -> Act (tools, `InlineWriter`, in code where the model is weak) ->
+Verify (`ActionNote`, the claim guard, "field shows it: yes", `changed: false`) -> Learn (`FactCapture`, writing samples, `TaskMemory`). The system prompt (`Prompts.system`) is
+a short list of objectives, not behaviour rules: understand the objective and context; use tools to act rather than explain; retrieve missing information before asking; adapt when a step
+fails; respect permissions; verify before claiming completion.
+
+- **Rules are accelerators and guards; the model decides what they are unsure of.** Keyword lists (`screen_words`, `question_words`, ...) route only the obvious and enforce
+  safety (nothing remembered after screen text, links the agent saw, no sending). Where they are unsure nothing is forced: there is **no ASK step any more** (it answered "what amount is due"
+  with "I could not connect that to what is on your screen. Search online?"); the message goes to the model with the screen block, a line saying what more is on screen ("window text
+  1,240 characters"), and a **`read_screen` tool** (`tools/screen.py`: selection, typing, window, page, from what the Mac app sent with the message) plus `research` and the apps' tools.
+  `recall` also returns the last task ("do what we did last time"). **Verify**: a reply that claims a result ("I've taken care of it", "booked", "paid") when no tool ran gets a
+  correction appended (`_unconfirmed_change`, now also with no app connected). Still deterministic on purpose: security, exact edits, memory commands, weather, `AppRouter`'s reading of the page the user has open.
+- **A writing task is combined** (`Tzara._gather_materials`, passed to `InlineWriter(gather=...)`): before the text is written, what the request needs is fetched in code: the weather and
+  web facts (`Researcher.research`, so weather comes from Open-Meteo) when the request has words like weather/look up/latest/price, and a search in any connected app it names
+  ("my Notion page called Trip"). The result goes into the writer's prompt as materials. "Write an email to Anna about the weather in Berlin" has the real numbers in it.
+- **Several edits are done one at a time** (`InlineWriter.steps`: split only if every part starts with an editing verb): "remove the greeting and make it shorter" removes the greeting in
+  code, then asks the model for "shorter" alone. An email's sign-off never carries a name the user did not give (`_without_invented_name`).
+- **The last task is remembered** (`memory/tasks.py`, `TaskMemory`, key `last_task`): every write stores what was asked and what was written, and is also put into the conversation
+  (`Tzara._record_written_task`) so the chat knows ("what did you write?") and the dashboard shows it; the writer's prompt carries the last task (and its text if the new request says
+  again/same/instead) so "the same email again but for Ben" works. Chat turns are stored as the last "chat" task and tool actions in the activity list carry the request that caused them.
+
+- **Exact text edits** (`agent/textedit.py`, `TextEdit`): "delete the second/last/Nth paragraph|sentence|line", "delete the paragraph about X", "remove the greeting/sign-off",
+  "replace X with Y", "delete everything", and "delete this" on a selection are done in `InlineWriter` with no model request (a deletion returns an empty text and the app
+  presses Delete). Anything unclear (target not found, two equal matches) goes to the model. A model edit that comes back **unchanged** is asked once more
+  (`write_tasks["edit_retry"]`, paragraphs numbered `[1]` for reference, the numbers stripped from the answer); still unchanged: `changed: false`, nothing is pasted and the bar says so.
+- **Memory commands** (`agent/commands.py`, `MemoryCommands`, run at the top of `Tzara.run`, answered by `Tzara._say`): "remember (that) X", "remember this" (the selection or the field's text),
+  "memorize", "note", "forget X" (one match only), "what do you remember/know about me". The user's own words, so allowed even when screen text came with the message; X becomes a
+  statement about the user ("my dentist is Lee" -> "The user's dentist is Lee."); passwords, keys and card numbers are refused.
+- **Where the user is** (opt-in, Settings → Context & writing → Use my location): `LocationProvider` (CoreLocation, reduced accuracy, one fix, reverse-geocoded by macOS to "City, Country", kept 30 min) sends `place` with each chat message (`POST /v1/chat`); coordinates never leave the app. The server uses it for weather with no place named, rewrites "near me / here / in my area" in the research question to the place (`Tzara._localised`), and answers "where am I" in code (`MemoryCommands._where`). Off by default; with it off the remembered city ("I live in X", "my city is X") is used, else the user is asked. The permission prompt itself has not been seen in use (accessory app): untested.
+- **Weather with no place** uses the place above, else the remembered city (`FactStore.by_slot("city")`), else asks which city instead of searching ("the weather" found some other city's).
 
 ## Memory that learns by itself
 

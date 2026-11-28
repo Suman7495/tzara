@@ -19,6 +19,7 @@ from tzara.memory.episodes import ConversationLog, Snippet, StoredMessage
 from tzara.memory.facts import Fact, FactStore, MemoryRefused
 from tzara.memory.personal import PersonalMemory
 from tzara.memory.styles import WritingSamples
+from tzara.memory.tasks import Task, TaskMemory
 
 __all__ = [
     "Activity",
@@ -32,5 +33,7 @@ __all__ = [
     "PersonalMemory",
     "Snippet",
     "StoredMessage",
+    "Task",
+    "TaskMemory",
     "WritingSamples",
 ]

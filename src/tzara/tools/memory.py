@@ -65,6 +65,7 @@ class Memory:
         self._facts: FactStore = personal.facts
         self._log: ConversationLog = personal.log
         self._activity = personal.activity
+        self._tasks = personal.tasks
         self._settings: MemorySettings = personal.settings
         self._prompts = prompts
         self._blocked = blocked
@@ -127,6 +128,14 @@ class Memory:
             parts.append("From earlier conversations:\n" + "\n".join(snippets))
         if done:
             parts.append("What I did for you:\n" + "\n".join(done))
+        task = self._tasks.last()
+        if task is not None:
+            kind = "wrote" if task.kind == "write" else "answered"
+            where = f" in {task.app}" if task.app else ""
+            parts.append(
+                f"The last task you gave me ({self._date(task.at)}): \u201c{task.asked}\u201d. "
+                f"I {kind}{where}:\n{task.result[:700]}"
+            )
         return "\n\n".join(parts) or "I don't remember anything about that."
 
     @staticmethod

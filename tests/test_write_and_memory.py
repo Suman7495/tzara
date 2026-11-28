@@ -102,7 +102,7 @@ class TestWriting:
         prompt = model.seen_messages[1][0].text
         assert "The user's name is Sam." in prompt
         assert "hey can u send me the deck" in prompt
-        assert "Wrote 2 characters in Slack" in memory.activity.recent()[-1].summary
+        assert "Wrote in Slack for" in memory.activity.recent()[-1].summary
 
 
 class TestMemoryLearnsByItself:

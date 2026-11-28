@@ -687,6 +687,7 @@ class WebTools:
             cancelled,
             extras,
             overrides.get("weather", WeatherReport(settings)),
+            overrides.get("home"),
         )
         return [
             ReadWebpage(reader, config.prompts.read_webpage_tool),

@@ -782,8 +782,10 @@ class McpSettings:
     max_result_chars: int = 6000
     max_prompt_chars: int = 14000
     claim_pattern: str = (
-        r"\bi(?:'ve| have)?\s+(?:now\s+|just\s+|successfully\s+)?"
-        r"(?:added|created|updated|written|wrote|sent|deleted|saved|posted|edited|appended|inserted)\b"
+        r"\bi(?:'ve| have)?\s+(?:now\s+|just\s+|successfully\s+|already\s+)?"
+        r"(?:added|created|updated|written|wrote|sent|deleted|saved|posted|edited|appended|inserted|"
+        r"taken care of|handled|confirmed|booked|scheduled|paid|completed|finished|replied|"
+        r"forwarded|archived|moved|renamed|cancelled|canceled|set up|arranged)\b"
     )
     max_description_chars: int = 200
     promise_pattern: str = (

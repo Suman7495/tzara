@@ -35,34 +35,13 @@ struct MessageRow: View {
         }
     }
 
-    /// What the assistant did, in a box of its own: each step with a tick, the one in progress with a
-    /// spinner. Before the first step it says it is thinking, so it does not look stuck.
+    /// What the assistant did, in a box of its own.
     private var activityBox: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            ForEach(Array(message.steps.enumerated()), id: \.offset) { _, step in
-                HStack(spacing: 6) {
-                    if step.done {
-                        Image(systemName: "checkmark").font(.caption2).foregroundStyle(.secondary).frame(width: 12)
-                    } else {
-                        ProgressView().controlSize(.mini).frame(width: 12)
-                    }
-                    Text(step.text)
-                        .font(.callout)
-                        .foregroundStyle(step.done ? .tertiary : .secondary)
-                        .lineLimit(2)
-                }
-            }
-            if message.steps.isEmpty {
-                HStack(spacing: 6) {
-                    ProgressView().controlSize(.small)
-                    Text(activity ?? "Thinking\u{2026}").font(.callout).foregroundStyle(.secondary)
-                }
-            }
-        }
-        .padding(10)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(Color.primary.opacity(0.07)))
+        StepsList(steps: message.steps, thinking: activity)
+            .padding(10)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(Color.primary.opacity(0.07)))
     }
 
     private var hasText: Bool { !message.text.isEmpty }
@@ -131,6 +110,38 @@ struct MessageRow: View {
         Task {
             try? await Task.sleep(nanoseconds: 1_500_000_000)
             copied = false
+        }
+    }
+}
+
+
+/// What the assistant did: each step with a tick, the one in progress with a spinner. Before the first
+/// step it says it is thinking, so it does not look stuck.
+struct StepsList: View {
+    let steps: [ChatMessage.Step]
+    var thinking: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            ForEach(Array(steps.enumerated()), id: \.offset) { _, step in
+                HStack(spacing: 6) {
+                    if step.done {
+                        Image(systemName: "checkmark").font(.caption2).foregroundStyle(.secondary).frame(width: 12)
+                    } else {
+                        ProgressView().controlSize(.mini).frame(width: 12)
+                    }
+                    Text(step.text)
+                        .font(.callout)
+                        .foregroundStyle(step.done ? .tertiary : .secondary)
+                        .lineLimit(2)
+                }
+            }
+            if steps.isEmpty {
+                HStack(spacing: 6) {
+                    ProgressView().controlSize(.small)
+                    Text(thinking ?? "Thinking\u{2026}").font(.callout).foregroundStyle(.secondary)
+                }
+            }
         }
     }
 }

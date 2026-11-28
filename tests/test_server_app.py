@@ -882,6 +882,7 @@ class TestWriting:
             "mode": "reply",
             "place": "chat",
             "replaces": "nothing",
+            "changed": True,
         }
         assert agents.writes[0].app == "Slack"
 

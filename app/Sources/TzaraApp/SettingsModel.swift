@@ -47,6 +47,18 @@ final class SettingsModel: ObservableObject {
 
     private let writePreferences = WritePreferences()
 
+    /// Whether Tzara may use the Mac's location to know the city, for weather and "near me".
+    @Published var useLocation: Bool {
+        didSet {
+            LocationPreferences().enabled = useLocation
+            LocationProvider.shared.forget()
+            if useLocation { LocationProvider.shared.requestPermission() }
+            locationDenied = LocationProvider.shared.denied
+        }
+    }
+
+    @Published private(set) var locationDenied = LocationProvider.shared.denied
+
     /// Whether Tzara may look at the app in front when the box opens. Changing it is saved at once;
     /// turning it on asks macOS for the Accessibility permission.
     @Published var useScreen: Bool {
@@ -103,6 +115,7 @@ final class SettingsModel: ObservableObject {
         self.screenPreferences = screenPreferences
         useScreen = screenPreferences.enabled
         writeInOtherApps = writePreferences.enabled
+        useLocation = LocationPreferences().enabled
         writeKey = writePreferences.key
         self.currentVersion = currentVersion ?? AppVersion("0")!
         appsChanges = apps.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }

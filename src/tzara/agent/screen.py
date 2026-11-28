@@ -88,6 +88,7 @@ class ScreenBlock:
         typing: str = "",
         visible: str = "",
         open_in: str = "",
+        more: str = "",
     ) -> str:
         """``text`` with the context in front of it; ``text`` alone if there is no context.
 
@@ -101,6 +102,8 @@ class ScreenBlock:
                 instead of repeating it, which would fill the conversation with copies.
             typing: The text of the field the user is typing in, if the message is about it.
             visible: The text visible in the window, if the message is about it.
+            more: What else is on the screen but not given here ("window text 1,200 characters"),
+                said so the model can ask for it with ``read_screen``.
             open_in: A connected app whose own page the user has open (its name is in the
                 address): the block then says the address is the page to act on, so the model
                 does not search for it or ask which page.
@@ -159,6 +162,8 @@ class ScreenBlock:
                 cls._safe(visible, settings.max_visible_chars),
                 ">>>",
             ]
+        if more:
+            lines.append(more)
         lines.append(cls.END)
         return "\n".join(lines) + "\n\n" + text
 
@@ -220,7 +225,6 @@ class Route(enum.Enum):
     DEFAULT = "default"  # nothing on the screen to lean on: the usual rules
     SCREEN = "screen"  # from what is on the screen, not the web
     WEB = "web"  # from a web search
-    ASK = "ask"  # no sign it is about the screen: ask before searching
 
 
 class PageFetcher(Protocol):
@@ -298,10 +302,11 @@ class ScreenPage:
     ) -> Route:
         """Where to answer ``text`` from, leaning towards the screen.
 
-        A web search takes many seconds, so it is not the first choice. With something relevant
-        on the screen, a question is answered from it unless it asks for the web outright
-        ("search", "news", "weather"). If it shows no sign of being about the screen, the user is
-        asked, with buttons, instead of the search starting by itself.
+        A web search takes many seconds, so it is not the first choice. With something on the
+        screen, a question goes to the model with that screen, unless it asks for the web outright
+        ("search", "news", "weather"). The rules cannot tell every way of asking ("what amount is
+        due") from a web question, so when they are unsure nothing is forced: the model sees the
+        screen and has the research and read_screen tools, and decides.
 
         Args:
             text: What the user wrote.
@@ -314,9 +319,7 @@ class ScreenPage:
             return Route.DEFAULT
         if self.asks_for_the_web(text):
             return Route.WEB
-        if page_read or self.about_the_screen(text, context):
-            return Route.SCREEN
-        return Route.ASK
+        return Route.SCREEN
 
     def asks_for_the_web(self, text: str) -> bool:
         """Whether ``text`` asks for the web outright."""

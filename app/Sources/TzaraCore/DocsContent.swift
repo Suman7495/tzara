@@ -33,6 +33,7 @@ public enum DocsContent {
         - **Enter** sends. **Esc** closes. Drag the bar by its background to move it.
         - It is a quiet companion that covers little of the screen: **the prompt** while you type, **only the response** (as a bubble) while Tzara answers, then the response with **the prompt again** below it.
         - It **goes away when you click another window** or switch to another app. Tap Right Option to bring it back.
+        - **Ask, then carry on with something else.** Tzara keeps working, and when the answer is ready the bubble **pops up** where the bar was, without taking your keyboard. Click elsewhere to put it away.
         - The small chip above the input shows what Tzara can see (the app and window you were in, and any selected text). The cross removes it for this message.
 
         ## Write or answer?
@@ -52,8 +53,14 @@ public enum DocsContent {
         | A draft | "friendlier" | Rewrites your draft |
         | Selected text | "shorter" | Rewrites the selection |
         | Anything | "write an email to Anna about Friday" | Writes the email body |
+        | An empty field | "write an email to Anna with the weather in Berlin" | Looks up the weather first, then writes it |
+        | An empty field | "the same email again, but for Ben" | Reuses your last task |
+        | A written text | "remove the greeting and make it shorter" | Does each change in turn |
+        | A written text | "delete the second paragraph", "remove the greeting", "replace Warsaw with Berlin" | Edits it exactly |
+        | A selection | "delete this" | Deletes it |
 
         ## What to know
+        - Click away while it is writing and it **carries on in the window you asked it to write in**: that window comes forward for a moment, the text goes in, and you are put back where you were.
         - It **never presses Return**. The text is pasted, you read it, and you send it yourself.
         - **⌘Z** undoes it in one step.
         - The style follows the place: chat, LinkedIn, email, code. It also uses facts it knows about you and your own earlier drafts, so it sounds like you.
@@ -66,7 +73,7 @@ public enum DocsContent {
         Ask in the bar or in the dashboard chat.
 
         - **Facts, news, prices, products, how-to**: Tzara searches the web, reads the best pages and answers in a few sentences with sources.
-        - **Weather**: "what's the weather in Berlin" is answered from a weather service with real numbers: now, today and the next two days.
+        - **Weather**: "what's the weather in Berlin" is answered from a weather service with real numbers: now, today and the next two days. With no place named, Tzara uses **where you are** (turn on **Use my location** in Settings → Context & writing; only the city is used) or the city you told it ("I live in Berlin"), and otherwise asks. "Near me" and "where am I" work the same way.
         - **Your screen**: "explain this", "summarize this page", "reply to this" use what is selected or open in the app in front.
         - **Mac**: "open Safari", "play", "pause", "next".
 
@@ -91,6 +98,8 @@ public enum DocsContent {
         - **Activity**: what Tzara did for you, such as a page it changed or text it wrote, so "did that work?" has an answer.
         - **Writing samples**: your own drafts, kept to match your tone.
         - **Conversations**: everything said, searchable.
+
+        You can also tell it directly, in the bar or the chat: **"remember that my dentist is Dr Lee"**, **"remember this"** (with text selected), **"forget the dentist"**, **"what do you remember about me?"**. These are done at once, not by the model. It does not keep passwords, keys or card numbers.
 
         Open **Memory** in the sidebar to read all of it, search it, delete a fact, or erase everything. It is one file on this Mac, readable only by you.
         """),

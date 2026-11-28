@@ -62,6 +62,8 @@ final class ChatModel: ObservableObject {
     /// window's text are only read then, not once a second. Given what the box shows, and
     /// returns what to send with the message (`nil` when the user has removed it).
     var freshContext: ((ScreenContext?) async -> ScreenContext?)?
+    /// Where the user is (a city), when they allowed it: sent with each message.
+    var placeProvider: (() async -> String?)?
     @Published private(set) var assistantName = "Tzara"
     @Published private(set) var isRenaming = false
     /// Bumped when the text field should take keyboard focus.
@@ -173,10 +175,11 @@ final class ChatModel: ObservableObject {
 
         replyTask = Task {
             let sent = await freshContext?(context) ?? context
+            let place = await placeProvider?()
             var waited = 0
             while true {
                 do {
-                    for try await event in client.stream(text, context: sent, searchFor: searchFor) {
+                    for try await event in client.stream(text, context: sent, searchFor: searchFor, place: place) {
                         switch event {
                         case let .status(text):
                             activity = text

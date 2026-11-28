@@ -16,6 +16,8 @@ final class BarState: ObservableObject {
     @Published var showExchange = false
     /// The height of the area under the input, or `nil` when there is nothing to show there.
     @Published var answerHeight: CGFloat?
+    /// How tall the bubble's content is, measured by the view (0 until it is).
+    @Published var contentHeight: CGFloat = 0
 }
 
 /// The small bar: the only window a key press opens. It opens beside the mouse pointer, takes a
@@ -34,6 +36,8 @@ final class BarController {
     private var writeTask: Task<Void, Never>?
     private var targetApp: NSRunningApplication?
     private var clickMonitor: Any?
+    /// A question was asked from the bar and its answer is not here yet.
+    private var awaitingReply = false
     private var watcher: Timer?
     private var reading = false
     private var copiedSince = NSPasteboard.general.changeCount
@@ -65,6 +69,7 @@ final class BarController {
         hosting.sizingOptions = []
         panel.contentView = hosting
         model.freshContext = { [weak self] shown in await self?.freshContext(for: shown) ?? shown }
+        model.placeProvider = { await LocationProvider.shared.place() }
         // An app that only describes itself when asked needs a few seconds after being asked, so
         // ask the moment it comes to the front.
         activation = NSWorkspace.shared.notificationCenter.addObserver(
@@ -76,15 +81,20 @@ final class BarController {
                 self.copiedSince = NSPasteboard.general.changeCount
                 if self.screenPreferences.enabled { ScreenReader().prepare(app) }
                 // Another app came to the front: the bar steps away until the key brings it back.
-                if self.isOpen, app.bundleIdentifier != Bundle.main.bundleIdentifier, !self.state.writing {
-                    self.hide()
-                }
+                if self.isOpen, app.bundleIdentifier != Bundle.main.bundleIdentifier { self.hide() }
             }
         }
         model.onWorking = { [weak self] in self?.onIndicator?(.working) }
-        model.onStopped = { [weak self] in self?.onIndicator?(.idle) }
+        model.onStopped = { [weak self] in
+            self?.awaitingReply = false
+            self?.onIndicator?(.idle)
+        }
         model.onReplyEnded = { [weak self] in
             guard let self else { return }
+            let wasAsked = awaitingReply
+            awaitingReply = false
+            // The user went on to something else while Tzara worked: the answer pops up when it is ready.
+            if wasAsked, !isOpen { popUp() }
             onIndicator?(isOpen ? .idle : .ready)
         }
         // The panel follows what it shows. Run after the change has landed (a publisher speaks
@@ -96,6 +106,7 @@ final class BarController {
             model.$notice.map { _ in () }.eraseToAnyPublisher(),
             state.$status.map { _ in () }.eraseToAnyPublisher(),
             state.$writing.map { _ in () }.eraseToAnyPublisher(),
+            state.$contentHeight.map { _ in () }.eraseToAnyPublisher(),
             state.$showExchange.map { _ in () }.eraseToAnyPublisher(),
         ])
         .sink { [weak self] in DispatchQueue.main.async { self?.layout() } }
@@ -118,10 +129,14 @@ final class BarController {
         record(reading)
         startWatching()
 
-        state.status = nil
-        state.showExchange = false
-        state.answerHeight = nil
-        let size = CGSize(width: BarLayout.width, height: BarLayout.height(hasChip: model.screen != nil, answer: nil))
+        // Opened again while Tzara is still answering: the response is shown, not a fresh prompt.
+        if model.phase == .idle {
+            state.status = nil
+            state.showExchange = false
+            state.answerHeight = nil
+            state.contentHeight = 0
+        }
+        let size = CGSize(width: BarLayout.width, height: targetHeight())
         // The pointer lands on the input line, which is at the bottom of the bar.
         let placement = PanelPlacement(pointerOffset: CGPoint(x: 28, y: BarLayout.inputHeight / 2))
         let cursor = NSEvent.mouseLocation
@@ -167,13 +182,13 @@ final class BarController {
 
     /// A click anywhere outside the bar (in another window or app) closes it. The bar never takes the
     /// front, so those clicks reach other apps, and a global monitor hears them; clicks in the bar
-    /// itself are not reported to it. A write in progress is left alone (it hides the bar itself).
+    /// itself are not reported to it. A write in progress carries on in the window it was asked for.
     private func listenForClicks() {
         stopListeningForClicks()
         clickMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown]) {
             [weak self] _ in
             MainActor.assumeIsolated {
-                guard let self, self.isOpen, !self.state.writing else { return }
+                guard let self, self.isOpen else { return }
                 FileLog.shared.info("bar: click outside")
                 self.hide()
             }
@@ -231,9 +246,13 @@ final class BarController {
                 })
             if Task.isCancelled { return }
             state.writing = false
-            if isOpen { panel.orderFrontRegardless() }  // without taking the keyboard from the field
             if outcome == .failed { model.draft = text }  // the user can send it again
             writeTask = nil
+            if isOpen {
+                panel.orderFrontRegardless()  // without taking the keyboard from the field
+            } else if outcome != .wrote {
+                popUp()  // put away meanwhile, and it did not go in: the user must hear how it went
+            }
         }
     }
 
@@ -242,6 +261,8 @@ final class BarController {
         guard !isWorking else { return }
         state.showExchange = true
         state.status = nil
+        awaitingReply = true
+        state.contentHeight = 0
         model.draft = message
         model.send()
     }
@@ -249,29 +270,41 @@ final class BarController {
     private func chat() {
         state.showExchange = true
         state.status = nil
+        awaitingReply = true
+        state.contentHeight = 0
         model.send()
     }
 
     // MARK: - Size
 
-    /// Sizes the panel to what it shows, keeping the input line where it is: the answer grows upward.
-    private func layout() {
+    /// What the panel should be: the response bubble (once something is asked), the suggestions, the
+    /// prompt pill. Only the bubble while Tzara answers. Updates what the view shows to match.
+    private func targetHeight() -> CGFloat {
         let last = model.messages.last
         var answer: CGFloat?
-        let offering = !(state.showExchange ? model.suggestions : model.screenSuggestions).isEmpty
         if state.showExchange, let last, last.role != .user {
-            answer = BarLayout.answerHeight(
+            // The measured height of the content once the view has reported it, else an estimate.
+            let estimate = BarLayout.answerHeight(
                 characters: last.text.count + (model.notice?.count ?? 0), steps: last.steps.count,
-                hasButtons: !last.choices.isEmpty || offering)
+                hasButtons: !last.choices.isEmpty)
+            answer = state.contentHeight > 0
+                ? min(BarLayout.maximumAnswer, max(BarLayout.minimumAnswer, state.contentHeight))
+                : estimate
         } else if state.status != nil {
-            answer = 40
-        } else if offering, !state.showExchange {
-            answer = 48  // just the suggestions, when something is selected
+            answer = BarLayout.minimumAnswer
         }
         if state.answerHeight != answer { state.answerHeight = answer }
         let showsInput = !isWorking
         if state.showsInput != showsInput { state.showsInput = showsInput }
-        let height = BarLayout.height(hasChip: model.screen != nil && answer == nil, answer: answer, showsInput: showsInput)
+        let offered = state.showExchange ? model.suggestions : model.screenSuggestions
+        return BarLayout.height(
+            hasChip: model.screen != nil && answer == nil, answer: answer, showsInput: showsInput,
+            suggestions: !offered.isEmpty)
+    }
+
+    /// Sizes the panel to what it shows, keeping the prompt where it is: the response grows upward.
+    private func layout() {
+        let height = targetHeight()
         guard isOpen, abs(panel.frame.height - height) > 0.5 else { return }
         var frame = panel.frame
         frame.size = CGSize(width: BarLayout.width, height: height)
@@ -282,7 +315,16 @@ final class BarController {
             frame.origin.y = area.maxY - 8 - height
         }
         panel.setFrame(frame, display: true)
-        FileLog.shared.info("bar resized: wanted height \(Int(height)) from bottom edge \(Int(frame.minY)); window now \(Int(panel.frame.height)) high, bottom edge \(Int(panel.frame.minY))")
+    }
+
+    /// The answer is ready and the bar had been put away: it comes back where it was, showing the answer,
+    /// without taking the keyboard from what the user is doing. A click elsewhere puts it away again.
+    private func popUp() {
+        isOpen = true
+        layout()
+        panel.orderFrontRegardless()  // not makeKey: typing in the other app goes on
+        listenForClicks()
+        FileLog.shared.info("bar: popped up with the answer")
     }
 
     // MARK: - What Tzara can see

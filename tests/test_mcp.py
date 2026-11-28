@@ -1003,7 +1003,7 @@ class TestHonestReplies:
         agent = self.agent(hub, model)
         reply = "".join(agent.handle("add a paragraph to my page"))
         assert reply.endswith(note)
-        assert "Nothing was changed" in agent.history()[-1].text  # so the model does not believe it
+        assert "Nothing was done" in agent.history()[-1].text  # so the model does not believe it
 
     def test_a_change_made_by_a_tool_gets_no_note(self, hub):
         from helpers import ToolCallingFakeModel

@@ -47,16 +47,27 @@ struct BarBehaviorTests {
         #expect(BarLayout.answerHeight(characters: 10, steps: 0, hasButtons: false) == BarLayout.minimumAnswer)
         #expect(BarLayout.answerHeight(characters: 100_000, steps: 3, hasButtons: true) == BarLayout.maximumAnswer)
         #expect(BarLayout.answerHeight(characters: 300, steps: 0, hasButtons: false) > BarLayout.minimumAnswer)
+    }
+
+    @Test func theBarIsABubbleAPillOfSuggestionsAndAPromptWithGapsBetween() {
+        let gap = BarLayout.gap
         #expect(BarLayout.height(hasChip: true, answer: nil) == BarLayout.inputHeight + BarLayout.chipHeight)
-        // While Tzara answers, only the response is shown; afterwards the prompt comes back under it.
+        // While Tzara answers, only the response is shown.
         #expect(BarLayout.height(hasChip: true, answer: 100, showsInput: false) == 100)
-        #expect(BarLayout.height(hasChip: false, answer: 100, showsInput: true) == 100 + BarLayout.inputHeight)
+        // Afterwards: the bubble, the suggestions and the prompt, apart.
+        #expect(
+            BarLayout.height(hasChip: false, answer: 100, showsInput: true, suggestions: true)
+                == 100 + BarLayout.suggestionHeight + BarLayout.inputHeight + 2 * gap)
+        #expect(BarLayout.height(hasChip: false, answer: 100, showsInput: true) == 100 + BarLayout.inputHeight + gap)
     }
 }
 
 @Suite("Explaining is not writing")
 struct ExplainTests {
     @Test func askingAboutSelectedTextIsChat() {
+        for line in ["remember this", "memorize this", "forget the dentist", "what do you remember about me", "note that I like tea"] {
+            #expect(BarIntent.decide(line, hasField: true, hasSelection: true, hasDraft: true) == .chat, "\(line)")
+        }
         for line in ["explain", "Explain this", "explain it to me", "summarize this", "what does this mean", "define", "why", "tldr"] {
             #expect(BarIntent.decide(line, hasField: true, hasSelection: true, hasDraft: true) == .chat, "\(line)")
             #expect(BarIntent.decide(line, hasField: false, hasSelection: false, hasDraft: false) == .chat, "\(line)")

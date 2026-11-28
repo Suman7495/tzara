@@ -137,6 +137,7 @@ class ChatTurn:
         release: Callable[[], None],
         context: ScreenContext | None = None,
         search_for: str | None = None,
+        place: str = "",
     ) -> None:
         """Prepare a turn. Nothing runs until :meth:`start`.
 
@@ -147,6 +148,7 @@ class ChatTurn:
             release: Called once the turn is over, to free the service.
             context: What the user was looking at, if the app sent it.
             search_for: A question to search the web for, if the user pressed "Search online".
+            place: Where the user is (a city), if the Mac app found out and was allowed to say.
         """
         self._agent = agent
         self._text = text
@@ -154,6 +156,7 @@ class ChatTurn:
         self._release = release
         self._context = context
         self._search_for = search_for
+        self._place = place
         self._cancelled = threading.Event()
 
     @property
@@ -177,7 +180,8 @@ class ChatTurn:
 
     def _run(self) -> None:
         """Stream the reply into the sink, whatever happens."""
-        replies = self._agent.run(self._text, self._context, self._search_for)
+        extra = {"place": self._place} if self._place else {}
+        replies = self._agent.run(self._text, self._context, self._search_for, **extra)
         try:
             for event in replies:
                 if self.cancelled:
@@ -350,6 +354,7 @@ class ChatService:
         sink: EventSink,
         context: ScreenContext | None = None,
         search_for: str | None = None,
+        place: str = "",
     ) -> ChatTurn:
         """Begin answering ``text``.
 
@@ -358,6 +363,7 @@ class ChatService:
             sink: Receives each event as it happens, then ``None``.
             context: What the user was looking at, if the app sent it.
             search_for: A question to search the web for, if the user pressed "Search online".
+            place: Where the user is, if known.
 
         Returns:
             The running turn, which can be cancelled.
@@ -378,6 +384,7 @@ class ChatService:
                 release=self._end_turn,
                 context=context,
                 search_for=search_for,
+                place=place,
             )
             self._turn = turn
             turn.start()

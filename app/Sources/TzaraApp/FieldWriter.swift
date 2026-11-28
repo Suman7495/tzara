@@ -66,26 +66,42 @@ final class FieldWriter {
             FileLog.shared.info(
                 "write: got \(written.text.count) chars (\(written.mode), \(written.place)) in "
                     + String(format: "%.1f", Date().timeIntervalSince(started)) + " s")
+            guard written.changed else {
+                status("I could not apply that edit. Try saying it another way.")
+                FileLog.shared.info("write: the edit changed nothing; the field is left as it was")
+                return .failed
+            }
             guard let field else {
                 Paster.copy(written.text)
                 status("No text field found: copied. Press \u{2318}V to paste.")
                 FileLog.shared.info("write: no field; text copied to the clipboard")
                 return .copied
             }
-            guard reader.isStillFocused(field, in: app) else {
-                Paster.copy(written.text)
-                status("You moved: the text is on the clipboard.")
-                FileLog.shared.info("write: the field lost the keyboard; text left on the clipboard")
-                return .copied
+            // The user may have clicked elsewhere while it was written. It still goes where it was asked
+            // for: that window comes forward for the moment, and the user is put back where they were.
+            var returnTo: NSRunningApplication?
+            if !reader.isStillFocused(field, in: app) {
+                let front = NSWorkspace.shared.frontmostApplication
+                returnTo = front?.processIdentifier == app.processIdentifier ? nil : front
+                guard await reader.bringBack(field, in: app) else {
+                    Paster.copy(written.text)
+                    status("Could not get back to the field: the text is on the clipboard.")
+                    FileLog.shared.info("write: could not bring the field back; text left on the clipboard")
+                    return .copied
+                }
+                FileLog.shared.info("write: the user had moved; the field was brought back for the paste")
             }
             await beforePaste()
             await Paster.insert(written.text, replacingAll: written.replaces == "field")
+            if let returnTo, !returnTo.isTerminated {
+                returnTo.activate(options: [.activateIgnoringOtherApps])  // back to what they were doing
+            }
             let now = reader.currentValue(of: field)
             let sample = String(written.text.prefix(24))
             let verified = now.isEmpty ? "unreadable" : (now.contains(sample) ? "yes" : "no")
             FileLog.shared.info(
                 "write: pasted \(written.text.count) chars, replaced \(written.replaces); field shows it: \(verified)")
-            status("Written. \u{2318}Z undoes it.")
+            status(written.text.isEmpty ? "Deleted. \u{2318}Z undoes it." : "Written. \u{2318}Z undoes it.")
             return .wrote
         } catch {
             if Task.isCancelled { return .failed }
@@ -131,7 +147,8 @@ enum Paster {
             press("a")
             try? await Task.sleep(nanoseconds: 60_000_000)
         }
-        press("v")
+        // Nothing to paste (a deletion): the selection, or everything, is removed with Delete.
+        if text.isEmpty { pressKey(51) } else { press("v") }
         try? await Task.sleep(nanoseconds: 350_000_000)
 
         guard board.changeCount == ours else { return }  // the user copied something meanwhile: leave it
@@ -152,6 +169,13 @@ enum Paster {
             let event = CGEvent(keyboardEventSource: source, virtualKey: code, keyDown: down)
             event?.flags = .maskCommand
             event?.post(tap: .cghidEventTap)
+        }
+    }
+
+    private static func pressKey(_ code: CGKeyCode) {
+        let source = CGEventSource(stateID: .hidSystemState)
+        for down in [true, false] {
+            CGEvent(keyboardEventSource: source, virtualKey: code, keyDown: down)?.post(tap: .cghidEventTap)
         }
     }
 

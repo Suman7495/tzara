@@ -19,6 +19,7 @@ from tzara.config import TzaraConfig
 EXPECTED_TOOLS = {
     "read_webpage",
     "research",
+    "read_screen",
 }
 
 # Only offered on a Mac, so the expected set depends on where the tests run.

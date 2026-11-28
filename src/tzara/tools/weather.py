@@ -172,13 +172,17 @@ class WeatherReport:
         """Whether the question is about the weather somewhere that it names."""
         return self.place(question) is not None
 
-    def report(self, question: str) -> str:
-        """The weather for the place in ``question``, as text for the model to answer from.
+    def asks_about_weather(self, question: str) -> bool:
+        """Whether the question is about the weather at all, whether or not it names a place."""
+        return self.TRIGGERS.search(question.lower()) is not None
+
+    def report(self, question: str, home: str | None = None) -> str:
+        """The weather for the place in ``question`` (or ``home``), as text to answer from.
 
         Raises:
             WebError: If there is no place, it is not found, or the service did not answer.
         """
-        place = self.place(question)
+        place = self.place(question) or home
         if place is None:
             raise WebError("The question names no place.")
         try:

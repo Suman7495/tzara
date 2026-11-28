@@ -370,8 +370,8 @@ class TestRoute:
         assert self.page.route("who won the champions league final", FIELD, True) is Route.WEB
         assert self.page.route("search for oolong tea", FIELD, True) is Route.WEB
 
-    def test_a_question_with_no_sign_of_the_screen_is_asked_about_not_searched(self):
-        assert self.page.route("what is the capital of Australia", FIELD, True) is Route.ASK
+    def test_a_question_with_no_sign_of_the_screen_goes_to_the_model_with_the_screen(self):
+        assert self.page.route("what is the capital of Australia", FIELD, True) is Route.SCREEN
 
     def test_nothing_on_the_screen_leaves_the_usual_rules(self):
         assert (
@@ -438,7 +438,7 @@ class TestAgentGivesTheScreenText:
         )
 
 
-class TestAskBeforeSearching:
+class TestTheModelDecidesWhenTheRulesAreUnsure:
     ASKED = ScreenContext(
         "Microsoft Outlook", "Re: Invoice", visible="From: Anna\nPlease pay by Friday."
     )
@@ -446,28 +446,14 @@ class TestAskBeforeSearching:
     def run(self, agent, text, context=None, search_for=None):
         return list(agent.run(text, context or self.ASKED, search_for))
 
-    def test_a_question_unrelated_to_the_screen_is_asked_about_with_two_buttons(self):
-        agent, model = agent_with_fake_model("never used")
-        events = self.run(agent, "what is the capital of Australia")
-        text = "".join(e.text for e in events if isinstance(e, AssistantDelta))
-        assert text == agent._config.prompts.screen_ask
-        (choices,) = [e for e in events if isinstance(e, Choices)]
-        search, screen = choices.options
-        assert (
-            search.label == "Search online"
-            and search.search_for == "what is the capital of Australia"
-        )
-        assert screen.search_for is None and "screen" in screen.message
-        assert not model.seen_messages  # the model was not asked, and nothing was searched
-
-    def test_the_question_and_the_ask_are_kept_so_the_next_message_has_something_to_refer_to(self):
-        agent, _ = agent_with_fake_model("x")
-        self.run(agent, "what is the capital of Australia")
-        shown = [(m.role, m.text) for m in agent.history()]
-        assert shown == [
-            ("user", "what is the capital of Australia"),
-            ("assistant", agent._config.prompts.screen_ask),
-        ]
+    def test_an_unclear_question_is_not_refused_or_asked_about_it_goes_to_the_model_with_the_screen(
+        self,
+    ):
+        agent, model = agent_with_fake_model("Canberra.")
+        events = self.run(agent, "what amount is due and when")
+        assert not any(isinstance(e, Choices) for e in events)
+        assert agent._turn_route == "skip"  # no search is forced; the model has the tools
+        assert "Please pay by Friday." in human_texts(model.seen_messages[-1])[-1]
 
     def test_the_search_button_searches_for_the_question_it_carries(self):
         agent, _ = agent_with_fake_model("Canberra.")

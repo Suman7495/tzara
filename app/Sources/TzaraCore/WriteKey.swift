@@ -169,9 +169,38 @@ public struct WrittenText: Decodable, Equatable, Sendable {
     public let place: String
     /// `selection`, `field` or `nothing`.
     public let replaces: String
+    /// `false`: the edit could not be applied, so nothing is pasted.
+    public let changed: Bool
+
+    private enum CodingKeys: String, CodingKey { case text, mode, place, replaces, changed }
+
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        text = try values.decode(String.self, forKey: .text)
+        mode = try values.decode(String.self, forKey: .mode)
+        place = try values.decode(String.self, forKey: .place)
+        replaces = try values.decode(String.self, forKey: .replaces)
+        changed = try values.decodeIfPresent(Bool.self, forKey: .changed) ?? true
+    }
 }
 
 extension Notification.Name {
     /// Posted when the user changes whether or with which key Tzara writes in other apps.
     public static let writeSettingsChanged = Notification.Name("tzara.writeSettingsChanged")
+}
+
+
+/// Whether Tzara may use the Mac's location to know which city the user is in: for "weather",
+/// "near me" and "where am I". Off until the user turns it on in Settings. Only the city and country
+/// are ever sent to Tzara's server, never the coordinates.
+public final class LocationPreferences: @unchecked Sendable {
+    static let enabledKey = "useLocation"
+    private let defaults: UserDefaults
+
+    public init(defaults: UserDefaults = .standard) { self.defaults = defaults }
+
+    public var enabled: Bool {
+        get { defaults.object(forKey: Self.enabledKey) as? Bool ?? false }
+        set { defaults.set(newValue, forKey: Self.enabledKey) }
+    }
 }

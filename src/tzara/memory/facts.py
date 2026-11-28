@@ -102,6 +102,11 @@ class FactStore:
         self._db.changed("DELETE FROM facts WHERE id = ?", (rows[0]["id"],))
         return float(rows[0]["created_at"])
 
+    def by_slot(self, slot: str) -> Fact | None:
+        """The fact in a slot (the user's city, employer...), if there is one."""
+        rows = self._db.execute(f"SELECT {self.COLUMNS} FROM facts WHERE slot = ?", (slot,))
+        return self._fact(rows[0]) if rows else None
+
     def remove(self, fact_id: int) -> bool:
         """Forget one fact. Returns whether there was one."""
         return self._db.changed("DELETE FROM facts WHERE id = ?", (fact_id,)) > 0

@@ -106,6 +106,15 @@ class FactCapture:
                 "The user lives in {0}.",
             ),
             _Rule(
+                "city",
+                re.compile(
+                    r"\bmy\s+(?:home\s*town|city|town|home city)\s+is\s+"
+                    rf"([\w.'\u2019 -]{{2,40}}?){self.END}",
+                    flags,
+                ),
+                "The user lives in {0}.",
+            ),
+            _Rule(
                 "email",
                 re.compile(r"\bmy e-?mail(?: address)? is\s+([\w.+-]+@[\w-]+\.[\w.-]+[\w])", flags),
                 "The user's email address is {0}.",

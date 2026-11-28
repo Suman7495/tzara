@@ -46,7 +46,7 @@ class Activity(BaseCallbackHandler):
     MAX_LOGGED_VALUE = 80
     WORDS_OF_THE_USER = frozenset({"query", "question", "title", "text", "content", "message"})
     MAX_LOGGED_ERROR = 300
-    WEB_TOOLS = frozenset({"web_search", "read_webpage", "research"})
+    WEB_TOOLS = frozenset({"web_search", "read_webpage", "research", "read_screen"})
 
     def __init__(self, prompts: Prompts) -> None:
         """Create the reporter.

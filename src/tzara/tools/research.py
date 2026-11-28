@@ -146,6 +146,7 @@ class Researcher:
         cancelled: Callable[[], bool] | None = None,
         extras: list[Any] | None = None,
         weather: Any = None,
+        home: Callable[[], str | None] | None = None,
     ) -> None:
         """Create the researcher.
 
@@ -161,8 +162,10 @@ class Researcher:
                 search's, but fill in when that finds little.
             weather: A :class:`~tzara.tools.weather.WeatherReport`. A question about the weather
                 of a named place is answered from it, with no search.
+            home: Gives the city the user lives in, if known: the place for "what is the weather".
         """
         self._weather = weather
+        self._home = home or (lambda: None)
         self._settings = settings
         self._extras = extras or []
         self._backend = backend
@@ -180,10 +183,14 @@ class Researcher:
         """
         started = time.monotonic()
         question = question.strip()
-        if self._weather is not None and self._weather.applies(question):
-            self._report(self._prompts.weather_checking.format(place=self._weather.place(question)))
+        if self._weather is not None and self._weather.asks_about_weather(question):
+            place = self._weather.place(question) or self._home()
+            if place is None:
+                # Searching for "the weather" finds some other city's: ask which place instead.
+                return self._prompts.weather_no_place
+            self._report(self._prompts.weather_checking.format(place=place))
             try:
-                report = self._weather.report(question)
+                report = self._weather.report(question, place)
             except WebError as error:
                 logger.info("weather: %s; searching the web instead", error)
             else:

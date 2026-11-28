@@ -68,4 +68,12 @@ struct WriteKeyTests {
         preferences.key = .rightControl
         #expect(WritePreferences(defaults: defaults).key == .rightControl)
     }
+
+    @Test func locationIsOffUntilTheUserTurnsItOn() {
+        let defaults = UserDefaults(suiteName: "location-tests-\(UUID().uuidString)")!
+        let preferences = LocationPreferences(defaults: defaults)
+        #expect(!preferences.enabled)
+        preferences.enabled = true
+        #expect(LocationPreferences(defaults: defaults).enabled)
+    }
 }

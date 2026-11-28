@@ -20,6 +20,10 @@
     <string>13.0</string>
     <key>LSUIElement</key>
     <true/>
+    <key>NSLocationUsageDescription</key>
+    <string>Tzara uses your city to answer questions about the weather and what is near you. Only the city name is used, never your exact position.</string>
+    <key>NSLocationWhenInUseUsageDescription</key>
+    <string>Tzara uses your city to answer questions about the weather and what is near you. Only the city name is used, never your exact position.</string>
     <key>NSHighResolutionCapable</key>
     <true/>
 </dict>
