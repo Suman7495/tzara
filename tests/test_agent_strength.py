@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from types import SimpleNamespace
 from typing import Any, cast
 
@@ -13,13 +14,16 @@ from tzara.agent.commands import MemoryCommands
 from tzara.agent.routing import QuestionRules
 from tzara.agent.textedit import TextEdit
 from tzara.agent.writer import InlineWriter, WriteRequest
-from tzara.config import TzaraConfig, WebSettings
+from tzara.config import MemorySettings, TzaraConfig, WebSettings
 from tzara.tools.weather import WeatherReport
 
 LETTER = (
     "Hi Anna,\n\nI wanted to ask about Warsaw. Are you free?\n\n"
     "Also, lunch on Friday works.\n\nBest,\nSam"
 )
+
+
+EDIT = TextEdit(TzaraConfig().write)
 
 
 class TestEditsDoneInCode:
@@ -43,7 +47,7 @@ class TestEditsDoneInCode:
         ],
     )
     def test_each_instruction_is_done(self, instruction, expected):
-        result = TextEdit.apply(instruction, LETTER)
+        result = EDIT.apply(instruction, LETTER)
         if expected is None:
             assert result is not None and result != LETTER
         else:
@@ -58,16 +62,16 @@ class TestEditsDoneInCode:
         ],
     )
     def test_what_is_not_clear_is_left_to_the_model(self, instruction):
-        assert TextEdit.apply(instruction, LETTER) is None
+        assert EDIT.apply(instruction, LETTER) is None
 
     def test_replace_changes_only_what_it_names(self):
-        result = TextEdit.apply("replace warsaw with Berlin", LETTER) or ""
+        result = EDIT.apply("replace warsaw with Berlin", LETTER) or ""
         assert "Berlin" in result and "Hi Anna" in result
 
     def test_deleting_a_selection_is_recognised(self):
-        assert TextEdit.deletes_the_selection("delete this")
-        assert TextEdit.deletes_the_selection("remove the selected paragraph")
-        assert not TextEdit.deletes_the_selection("delete the second paragraph")
+        assert EDIT.deletes_the_selection("delete this")
+        assert EDIT.deletes_the_selection("remove the selected paragraph")
+        assert not EDIT.deletes_the_selection("delete the second paragraph")
 
 
 class TestTheWriterEdits:
@@ -123,7 +127,7 @@ class TestMemoryCommands:
     @staticmethod
     def commands():
         memory = personal_memory()
-        return MemoryCommands(memory.facts, 300), memory
+        return MemoryCommands(memory.facts, MemorySettings()), memory
 
     def test_remember_a_statement_keeps_it_as_a_fact_about_the_user(self):
         commands, memory = self.commands()
@@ -238,7 +242,7 @@ class TestWeatherWithoutAPlace:
 class TestKnowingWhereTheUserIs:
     def test_where_am_i_is_answered_from_the_macs_location_or_says_how_to_turn_it_on(self):
         memory = personal_memory()
-        commands = MemoryCommands(memory.facts, 300)
+        commands = MemoryCommands(memory.facts, MemorySettings())
         assert commands.handle("where am i?", place="Darmstadt, Germany") == (
             "You are in Darmstadt, Germany, going by your Mac's location."
         )
@@ -258,6 +262,7 @@ class TestKnowingWhereTheUserIs:
 
         agent = Tzara.__new__(Tzara)
         agent._turn_place = "Darmstadt, Germany"
+        agent._near_me = re.compile(TzaraConfig().write.near_me, re.IGNORECASE)
         assert agent._localised("best pizza near me") == "best pizza in Darmstadt, Germany"
         assert agent._localised("what is the weather here") == (
             "what is the weather in Darmstadt, Germany"
@@ -270,13 +275,12 @@ class TestTasksAreCombinedAndRemembered:
         return InlineWriter(lambda: model, TzaraConfig(), memory, gather=gather, record=record)
 
     def test_several_edits_are_done_one_at_a_time(self):
-        assert InlineWriter.steps("remove the greeting and make the rest shorter") == [
+        writer = self.writer(RecordingFakeModel.replying(""))
+        assert writer.steps("remove the greeting and make the rest shorter") == [
             "remove the greeting",
             "make the rest shorter",
         ]
-        assert InlineWriter.steps("make it shorter and friendlier") == [
-            "make it shorter and friendlier"
-        ]
+        assert writer.steps("make it shorter and friendlier") == ["make it shorter and friendlier"]
         model = RecordingFakeModel.replying("Anna, can we meet on Friday? Free?")
         result = self.writer(model).write(
             WriteRequest(
@@ -431,9 +435,9 @@ class TestTheUsersOwnContentIsSearchedInTheirApps:
 
     def test_a_paragraph_the_text_does_not_have_is_not_improvised(self):
         three = "One.\n\nTwo.\n\nThree."
-        assert TextEdit.target_missing("delete the ninth paragraph", three)
-        assert not TextEdit.target_missing("delete the second paragraph", three)
-        assert not TextEdit.target_missing("delete the last paragraph", three)
+        assert EDIT.target_missing("delete the ninth paragraph", three)
+        assert not EDIT.target_missing("delete the second paragraph", three)
+        assert not EDIT.target_missing("delete the last paragraph", three)
         writer = InlineWriter(lambda: RecordingFakeModel.replying("never"), TzaraConfig(), None)
         result = writer.write(
             WriteRequest(app="Outlook", field=three, instruction="delete the ninth paragraph")

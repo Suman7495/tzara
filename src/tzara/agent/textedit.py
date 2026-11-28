@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import re
-from typing import ClassVar
+
+from tzara.config import WriteSettings
 
 
 class TextEdit:
@@ -15,87 +16,69 @@ class TextEdit:
     instruction is not one it knows, or its target is not in the text, and the model takes over.
     """
 
-    ORDINALS: ClassVar[dict[str, int]] = {
-        "first": 1,
-        "second": 2,
-        "third": 3,
-        "fourth": 4,
-        "fifth": 5,
-        "sixth": 6,
-        "seventh": 7,
-        "eighth": 8,
-        "ninth": 9,
-        "tenth": 10,
-        "last": -1,
-        "final": -1,
-    }
-    DELETE: ClassVar[str] = r"(?:delete|remove|drop|erase|cut|get rid of|take out)"
-    POLITE: ClassVar[re.Pattern[str]] = re.compile(
-        r"^(?:(?:please|can you|could you|would you|just|hey)\s+)+", re.IGNORECASE
-    )
-    UNITS: ClassVar[str] = r"(?:paragraph|para|sentence|line)"
-    SIGN_OFF: ClassVar[re.Pattern[str]] = re.compile(
-        r"^(?:best|regards|kind regards|best regards|warm regards|thanks|thank you|cheers|"
-        r"sincerely|yours|many thanks|with thanks|talk soon|take care)\b",
-        re.IGNORECASE,
-    )
-    GREETING: ClassVar[re.Pattern[str]] = re.compile(
-        r"^(?:hi|hello|hey|dear|good (?:morning|afternoon|evening))\b", re.IGNORECASE
-    )
+    def __init__(self, settings: WriteSettings) -> None:
+        """Create the editor.
 
-    @classmethod
-    def clean(cls, instruction: str) -> str:
+        Args:
+            settings: The words that name a verb, a part of a text and a place in it.
+        """
+        flags = re.IGNORECASE
+        self._ordinals = settings.edit_ordinals
+        self._delete = settings.edit_delete
+        self._units = settings.edit_units
+        self._polite = re.compile(settings.edit_polite, flags)
+        self._sign_off = re.compile(settings.edit_sign_off, flags)
+        self._greeting = re.compile(settings.edit_greeting, flags)
+
+    def clean(self, instruction: str) -> str:
         """The instruction without polite words in front, one line."""
-        return cls.POLITE.sub("", " ".join(instruction.strip().split())).rstrip(".!")
+        return self._polite.sub("", " ".join(instruction.strip().split())).rstrip(".!")
 
-    @classmethod
-    def deletes_the_selection(cls, instruction: str) -> bool:
+    def deletes_the_selection(self, instruction: str) -> bool:
         """Whether the instruction just says to delete what is selected ("delete this")."""
-        text = cls.clean(instruction).lower()
+        text = self.clean(instruction).lower()
         return bool(
             re.fullmatch(
-                rf"{cls.DELETE}(?: (?:this|that|it|the selection|"
-                rf"the selected (?:text|part|paragraph)|the {cls.UNITS}))?",
+                rf"{self._delete}(?: (?:this|that|it|the selection|"
+                rf"the selected (?:text|part|paragraph)|the {self._units}))?",
                 text,
             )
         )
 
-    @classmethod
-    def target_missing(cls, instruction: str, text: str) -> bool:
+    def target_missing(self, instruction: str, text: str) -> bool:
         """Whether the instruction names a paragraph, sentence or line the text does not have.
 
         "Delete the ninth paragraph" of a text of three: there is nothing to do, and the model must
         not be asked to improvise (it rewrote the text). The answer is "nothing changed".
         """
-        lowered = cls.clean(instruction).lower()
-        ordinal = "|".join([*cls.ORDINALS, r"\d+(?:st|nd|rd|th)?"])
+        lowered = self.clean(instruction).lower()
+        ordinal = "|".join([*self._ordinals, r"\d+(?:st|nd|rd|th)?"])
         found = re.fullmatch(
-            rf"{cls.DELETE} (?:the )?(?P<which>{ordinal}) (?P<unit>{cls.UNITS})", lowered
-        ) or re.fullmatch(rf"{cls.DELETE} (?P<unit>{cls.UNITS}) (?P<which>\d+)", lowered)
+            rf"{self._delete} (?:the )?(?P<which>{ordinal}) (?P<unit>{self._units})", lowered
+        ) or re.fullmatch(rf"{self._delete} (?P<unit>{self._units}) (?P<which>\d+)", lowered)
         if not found:
             return False
         which = found.group("which")
-        number = cls.ORDINALS.get(which) or int(re.sub(r"\D", "", which))
+        number = self._ordinals.get(which) or int(re.sub(r"\D", "", which))
         unit = found.group("unit")
         if unit in {"paragraph", "para"}:
-            count = len(cls._paragraphs(text))
+            count = len(self._paragraphs(text))
         elif unit == "line":
             count = len([line for line in text.split("\n") if line.strip()])
         else:
             count = len(re.findall(r"[^.!?\n]+(?:[.!?]+|$)\s*", text))
         return number != -1 and number > count
 
-    @classmethod
-    def apply(cls, instruction: str, text: str) -> str | None:
+    def apply(self, instruction: str, text: str) -> str | None:
         """``text`` with the edit asked for, or ``None`` if ``instruction`` is not one of these."""
-        original = cls.clean(instruction)
+        original = self.clean(instruction)
         lowered = original.lower()
         result = (
-            cls._clear(lowered)
-            or cls._numbered(lowered, text)
-            or cls._about(lowered, text)
-            or cls._greeting_or_sign_off(lowered, text)
-            or cls._replace(original, text)
+            self._clear(lowered)
+            or self._numbered(lowered, text)
+            or self._about(lowered, text)
+            or self._greeting_or_sign_off(lowered, text)
+            or self._replace(original, text)
         )
         if result is None:
             return None
@@ -111,32 +94,30 @@ class TextEdit:
         def __bool__(self) -> bool:
             return True
 
-    @classmethod
-    def _clear(cls, lowered: str) -> _Result | None:
+    def _clear(self, lowered: str) -> _Result | None:
         if re.fullmatch(
-            rf"{cls.DELETE} (?:everything|all|all of it|the whole thing|it all|all the text)"
+            rf"{self._delete} (?:everything|all|all of it|the whole thing|it all|all the text)"
             r"|clear (?:it|all|everything)",
             lowered,
         ):
-            return cls._Result("")
+            return self._Result("")
         return None
 
-    @classmethod
-    def _numbered(cls, lowered: str, text: str) -> _Result | None:
-        ordinal = "|".join([*cls.ORDINALS, r"\d+(?:st|nd|rd|th)?"])
+    def _numbered(self, lowered: str, text: str) -> _Result | None:
+        ordinal = "|".join([*self._ordinals, r"\d+(?:st|nd|rd|th)?"])
         found = re.fullmatch(
-            rf"{cls.DELETE} (?:the )?(?P<which>{ordinal}) (?P<unit>{cls.UNITS})", lowered
-        ) or re.fullmatch(rf"{cls.DELETE} (?P<unit>{cls.UNITS}) (?P<which>\d+)", lowered)
+            rf"{self._delete} (?:the )?(?P<which>{ordinal}) (?P<unit>{self._units})", lowered
+        ) or re.fullmatch(rf"{self._delete} (?P<unit>{self._units}) (?P<which>\d+)", lowered)
         if not found:
             return None
         which = found.group("which")
-        number = cls.ORDINALS.get(which) or int(re.sub(r"\D", "", which))
-        return cls._remove(found.group("unit"), text, lambda units: cls._pick(units, number))
+        number = self._ordinals.get(which) or int(re.sub(r"\D", "", which))
+        return self._remove(found.group("unit"), text, lambda units: self._pick(units, number))
 
-    @classmethod
-    def _about(cls, lowered: str, text: str) -> _Result | None:
+    def _about(self, lowered: str, text: str) -> _Result | None:
         found = re.fullmatch(
-            rf"{cls.DELETE} (?:the )?(?P<unit>{cls.UNITS}) (?:about|on|containing|with|mentioning|"
+            rf"{self._delete} (?:the )?(?P<unit>{self._units}) "
+            r"(?:about|on|containing|with|mentioning|"
             r"that (?:mentions|says|talks about|is about)) (?P<what>.+)",
             lowered,
         )
@@ -155,24 +136,22 @@ class TextEdit:
                 return None  # nothing mentions it, or the choice is not clear: not guessed
             return scores.index(best)
 
-        return cls._remove(found.group("unit"), text, choose)
+        return self._remove(found.group("unit"), text, choose)
 
-    @classmethod
-    def _greeting_or_sign_off(cls, lowered: str, text: str) -> _Result | None:
-        paragraphs = cls._paragraphs(text)
-        if re.fullmatch(rf"{cls.DELETE} (?:the )?(?:greeting|salutation)", lowered):
-            if paragraphs and cls.GREETING.match(paragraphs[0]) and len(paragraphs[0]) < 60:
-                return cls._Result("\n\n".join(paragraphs[1:]))
+    def _greeting_or_sign_off(self, lowered: str, text: str) -> _Result | None:
+        paragraphs = self._paragraphs(text)
+        if re.fullmatch(rf"{self._delete} (?:the )?(?:greeting|salutation)", lowered):
+            if paragraphs and self._greeting.match(paragraphs[0]) and len(paragraphs[0]) < 60:
+                return self._Result("\n\n".join(paragraphs[1:]))
         elif re.fullmatch(
-            rf"{cls.DELETE} (?:the )?(?:sign-?off|sign off|signature|closing)", lowered
+            rf"{self._delete} (?:the )?(?:sign-?off|sign off|signature|closing)", lowered
         ):
             for start in range(len(paragraphs) - 1, 0, -1):
-                if cls.SIGN_OFF.match(paragraphs[start]) and len(paragraphs[start]) < 120:
-                    return cls._Result("\n\n".join(paragraphs[:start]))
+                if self._sign_off.match(paragraphs[start]) and len(paragraphs[start]) < 120:
+                    return self._Result("\n\n".join(paragraphs[:start]))
         return None
 
-    @classmethod
-    def _replace(cls, original: str, text: str) -> _Result | None:
+    def _replace(self, original: str, text: str) -> _Result | None:
         found = re.fullmatch(
             r"(?:replace|change|swap)\s+[\"\u201c'\u2018]?(?P<old>.+?)[\"\u201d'\u2019]?\s+(?:with|to|by|for)\s+"
             r"[\"\u201c'\u2018]?(?P<new>.+?)[\"\u201d'\u2019]?",
@@ -184,7 +163,7 @@ class TextEdit:
         pattern = re.compile(re.escape(found.group("old")), re.IGNORECASE)
         if not pattern.search(text):
             return None  # "change the tone to friendly" names no text: that is for the model
-        return cls._Result(pattern.sub(lambda _: found.group("new"), text))
+        return self._Result(pattern.sub(lambda _: found.group("new"), text))
 
     # -- units ----------------------------------------------------------------------------------
 
@@ -201,25 +180,24 @@ class TextEdit:
         index = len(units) - 1 if number == -1 else number - 1
         return index if 0 <= index < len(units) else None
 
-    @classmethod
-    def _remove(cls, unit: str, text: str, choose) -> _Result | None:  # type: ignore[no-untyped-def]
+    def _remove(self, unit: str, text: str, choose) -> _Result | None:  # type: ignore[no-untyped-def]
         if unit in {"paragraph", "para"}:
-            paragraphs = cls._paragraphs(text)
+            paragraphs = self._paragraphs(text)
             index = choose(paragraphs)
             if index is None:
                 return None
             joiner = "\n\n" if re.search(r"\n\s*\n", text) else "\n"
-            return cls._Result(joiner.join(paragraphs[:index] + paragraphs[index + 1 :]))
+            return self._Result(joiner.join(paragraphs[:index] + paragraphs[index + 1 :]))
         if unit == "line":
             lines = [line for line in text.split("\n") if line.strip()]
             index = choose(lines)
             if index is None:
                 return None
             kept = lines[:index] + lines[index + 1 :]
-            return cls._Result("\n".join(kept))
+            return self._Result("\n".join(kept))
         spans = [m.span() for m in re.finditer(r"[^.!?\n]+(?:[.!?]+|$)\s*", text)]
         index = choose([text[start:end] for start, end in spans])
         if index is None:
             return None
         start, end = spans[index]
-        return cls._Result((text[:start] + text[end:]).strip())
+        return self._Result((text[:start] + text[end:]).strip())

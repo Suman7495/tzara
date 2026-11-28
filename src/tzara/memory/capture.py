@@ -31,36 +31,11 @@ class _Rule:
 class FactCapture:
     """Reads a message for facts about its writer and stores them."""
 
-    ROLES: ClassVar[str] = (
-        r"engineer|developer|designer|founder|co-?founder|ceo|cto|coo|cfo|manager|director|"
-        r"student|teacher|professor|doctor|nurse|lawyer|researcher|writer|consultant|analyst|"
-        r"scientist|architect|marketer|accountant|freelancer|entrepreneur|investor|recruiter"
-    )
-    RELATIONS: ClassVar[str] = (
-        r"wife|husband|partner|girlfriend|boyfriend|son|daughter|brother|sister|mother|father|"
-        r"mom|dad|boss|manager|cofounder|co-founder|colleague|dog|cat"
-    )
     END: ClassVar[str] = (
         r"(?=[.,;!?]|\s*$|\s+(?:and|but|so|because|since|though|now|currently|right now"
         r"|at|for|in|with|from|near)\b)"
     )
     NAME: ClassVar[str] = r"([A-Za-z][\w'\u2019-]*(?:\s+[A-Z][\w'\u2019-]*)?)"
-    NOT_NAMES: ClassVar[frozenset[str]] = frozenset(
-        {"a", "an", "the", "not", "so", "very", "just", "here", "there", "sorry", "fine", "ok"}
-    )
-    VAGUE: ClassVar[frozenset[str]] = frozenset(
-        {"it", "this", "that", "them", "these", "those", "him", "her", "you", "so", "too", "to"}
-    )
-    PREFERENCE_VERBS: ClassVar[dict[str, str]] = {
-        "prefer": "prefers",
-        "like": "likes",
-        "love": "loves",
-        "enjoy": "enjoys",
-        "hate": "hates",
-        "dislike": "dislikes",
-        "don't like": "does not like",
-        "do not like": "does not like",
-    }
 
     def __init__(self, facts: FactStore, settings: MemorySettings) -> None:
         """Create it.
@@ -71,6 +46,8 @@ class FactCapture:
         """
         self._facts = facts
         self._settings = settings
+        self._vague = frozenset(settings.vague_objects)
+        self._not_names = frozenset(settings.not_names)
         flags = re.IGNORECASE
         self._rules = (
             _Rule(
@@ -91,7 +68,7 @@ class FactCapture:
                 "role",
                 re.compile(
                     r"\bi(?:'m| am)\s+(?:a |an |the )?((?:[\w-]+ ){0,2}"
-                    rf"(?:{self.ROLES})){self.END}",
+                    rf"(?:{settings.roles})){self.END}",
                     flags,
                 ),
                 "The user is a {0}.",
@@ -121,10 +98,10 @@ class FactCapture:
             ),
         )
         self._relation = re.compile(
-            rf"\bmy\s+({self.RELATIONS})(?:'s name)?\s+(?:is|are)\s+(?:called\s+|named\s+)?"
+            rf"\bmy\s+({settings.relations})(?:'s name)?\s+(?:is|are)\s+(?:called\s+|named\s+)?"
             rf"([A-Z][\w'\u2019-]*(?:\s+[A-Z][\w'\u2019-]*)?){self.END}"
         )
-        verbs = "|".join(re.escape(verb) for verb in self.PREFERENCE_VERBS)
+        verbs = "|".join(re.escape(verb) for verb in settings.preference_verbs)
         self._preference = re.compile(rf"\bi\s+({verbs})\s+(.{{3,80}}?)(?=[.!?]|\s*$)", flags)
         self._standing = re.compile(
             r"^\s*(?:please\s+|from now on,?\s+)?(always|never)\s+(.{4,100}?)(?=[.!?]|\s*$)",
@@ -170,8 +147,8 @@ class FactCapture:
             found.append((f"relation:{relation}", f"The user's {relation}'s name is {name}."))
         for match in self._preference.finditer(text):
             verb, thing = match.group(1).lower(), self._tidy(match.group(2))
-            if thing.split()[0].lower() not in self.VAGUE:
-                found.append(("", f"The user {self.PREFERENCE_VERBS[verb]} {thing}."))
+            if thing.split()[0].lower() not in self._vague:
+                found.append(("", f"The user {self._settings.preference_verbs[verb]} {thing}."))
         standing = self._standing.search(text)
         if standing and standing.group(2).strip().lower() not in {"mind", "been"}:
             first = standing.group(2).split()[0].lower()
@@ -187,7 +164,7 @@ class FactCapture:
 
     def _plausible(self, value: str) -> bool:
         words = value.lower().split()
-        return bool(words) and words[0] not in self.NOT_NAMES and len(value) >= 2
+        return bool(words) and words[0] not in self._not_names and len(value) >= 2
 
     @staticmethod
     def _tidy(value: str) -> str:

@@ -206,7 +206,90 @@ class WebSettings:
         cache_seconds: How long a search result or a page is remembered, so a follow-up question
             on the same subject does not fetch it again.
         max_html_chars: Most HTML read from one page, so a huge or hostile page cannot stall it.
+        weather_words: Pattern for words that make a question about the weather.
+        weather_place: Pattern that introduces a place in such a question ("in", "near").
+        weather_noise: Words of a weather question that are not part of a place name.
     """
+
+    weather_words: str = (
+        "\\b(weather|forecast|temperature|raining|rain|snowing|snow|sunny|"
+        "humidity|windy|umbrella)\\b"
+    )
+    weather_place: str = "\\b(?:in|for|at|near|around)\\s+([^?.!,;]+)"
+    weather_noise: tuple[str, ...] = (
+        "a",
+        "afternoon",
+        "an",
+        "and",
+        "any",
+        "are",
+        "be",
+        "can",
+        "check",
+        "could",
+        "current",
+        "currently",
+        "do",
+        "does",
+        "evening",
+        "forecast",
+        "get",
+        "give",
+        "going",
+        "hey",
+        "hi",
+        "how",
+        "hows",
+        "humidity",
+        "i",
+        "is",
+        "it",
+        "its",
+        "latest",
+        "like",
+        "me",
+        "morning",
+        "my",
+        "need",
+        "now",
+        "of",
+        "on",
+        "or",
+        "our",
+        "outside",
+        "please",
+        "rain",
+        "raining",
+        "right",
+        "should",
+        "show",
+        "snow",
+        "snowing",
+        "some",
+        "sunny",
+        "tell",
+        "temperature",
+        "the",
+        "there",
+        "this",
+        "to",
+        "today",
+        "tomorrow",
+        "tonight",
+        "umbrella",
+        "was",
+        "weather",
+        "week",
+        "weekend",
+        "what",
+        "whats",
+        "will",
+        "windy",
+        "with",
+        "would",
+        "yesterday",
+        "you",
+    )
 
     enabled: bool = True
     max_results: int = 8
@@ -323,7 +406,35 @@ class ResearchSettings:
         question_words: Words anywhere in a message that ask for facts, advice or comparisons.
         chat_patterns: Regular expressions for messages that need no web even if they look like
             questions: small talk, questions about the user, arithmetic, commands for the Mac.
+        greeting: Pattern for opening words that are not part of a question ("hey", "ok so").
+        contractions: Spellings without an apostrophe and the word they stand for ("whats").
+        app_generic_words: Words of an app's name that do not tell it apart ("microsoft").
+        own_content: Pattern for a request about the user's own notes and documents.
+        title_after: Pattern for a title named in a request ("called Trip").
     """
+
+    greeting: str = "^\\s*(?:(?:hi|hello|hey|yo|ok|okay|so|well|please|there)\\b[\\s,!.:-]*)+"
+    contractions: Mapping[str, str] = field(
+        default_factory=lambda: {
+            "whats": "what",
+            "whos": "who",
+            "wheres": "where",
+            "hows": "how",
+            "whens": "when",
+            "whys": "why",
+        }
+    )
+    app_generic_words: tuple[str, ...] = ("app", "apps", "files", "microsoft", "work")
+    own_content: str = (
+        "\\b(?:my|our)\\b.{0,40}\\b(?:notes?|pages?|docs?|documents?|wiki|"
+        "workspace|roadmap|projects?|meeting notes|data ?room|notion)\\b|"
+        "\\b(?:data ?room|meeting notes)\\b"
+    )
+    title_after: str = (
+        "\\b(?:called|named|titled)\\s+(?:[\"“'](?P<quoted>[^\"”']+)[\"”']|"
+        "(?P<plain>[^\"”'.,;\\n]+?)(?:\\s+(?:page|doc|document|database|and|"
+        "with|in|on)\\b|[.,;\\n]|$))"
+    )
 
     max_query_chars: int = 100
     keyword_words: int = 8
@@ -513,7 +624,113 @@ class MemorySettings:
         max_sample_chars: Longest sample kept (the rest is cut).
         capture_max_chars: Longest message from which facts are picked up by themselves.
             Longer text is a paste, not the user speaking about themselves.
+        roles: Pattern of job titles that "I am a ..." may state.
+        relations: Pattern of people and pets that "my ... is ..." may name.
+        not_names: Words that are not a name after "my name is".
+        vague_objects: Words that make "I like ..." too vague to keep.
+        preference_verbs: Verbs of "I like/hate ..." and how a fact states each.
+        command_remember: Pattern for "remember that ..." (the fact is group 1).
+        command_forget: Pattern for "forget ..." (what to forget is group 1).
+        command_recall: Pattern for "what do you remember about me".
+        command_where: Pattern for "where am I".
+        command_this: Words that make "remember ..." mean the selection.
+        command_secret: Pattern for what is never kept (passwords, keys, card numbers).
+        command_verbs: First-person verbs and their third-person form, for stating a fact.
     """
+
+    roles: str = (
+        "engineer|developer|designer|founder|co-?founder|ceo|cto|coo|cfo|"
+        "manager|director|student|teacher|professor|doctor|nurse|lawyer|"
+        "researcher|writer|consultant|analyst|scientist|architect|marketer|"
+        "accountant|freelancer|entrepreneur|investor|recruiter"
+    )
+    relations: str = (
+        "wife|husband|partner|girlfriend|boyfriend|son|daughter|brother|sister|"
+        "mother|father|mom|dad|boss|manager|cofounder|co-founder|colleague|dog|"
+        "cat"
+    )
+    not_names: tuple[str, ...] = (
+        "a",
+        "an",
+        "fine",
+        "here",
+        "just",
+        "not",
+        "ok",
+        "so",
+        "sorry",
+        "the",
+        "there",
+        "very",
+    )
+    vague_objects: tuple[str, ...] = (
+        "her",
+        "him",
+        "it",
+        "so",
+        "that",
+        "them",
+        "these",
+        "this",
+        "those",
+        "to",
+        "too",
+        "you",
+    )
+    preference_verbs: Mapping[str, str] = field(
+        default_factory=lambda: {
+            "prefer": "prefers",
+            "like": "likes",
+            "love": "loves",
+            "enjoy": "enjoys",
+            "hate": "hates",
+            "dislike": "dislikes",
+            "don't like": "does not like",
+            "do not like": "does not like",
+        }
+    )
+    command_remember: str = (
+        "^\\s*(?:please\\s+|hey\\s+|can you\\s+|could you\\s+)?(?:remember|"
+        "memori[sz]e|make a note|note down|note|save|keep in mind|"
+        "don'?t forget|do not forget)\\b(?:\\s+that)?\\s*[:,-]?\\s*(.*)$"
+    )
+    command_forget: str = "^\\s*(?:please\\s+)?forget\\b(?:\\s+(?:about|that))?\\s+(.+)$"
+    command_recall: str = (
+        "^\\s*(?:hey\\s+)?(?:what|which)\\b.*\\b(?:do you|have you|"
+        "did you)\\b.*\\b(?:know|remember|learned|learnt|stored|"
+        "saved)\\b.*\\b(?:about me|about us|so far)?\\s*\\??\\s*$|^\\s*(?:show|"
+        "list)\\s+(?:me\\s+)?(?:my\\s+)?(?:memory|memories|"
+        "what you remember)\\b"
+    )
+    command_where: str = (
+        "^\\s*(?:hey\\s+)?(?:where am i|where are we|where do i live|what(?:'s|"
+        " is) my (?:current )?(?:location|city|place))\\b"
+    )
+    command_this: tuple[str, ...] = ("all this", "it", "that", "this", "this one")
+    command_secret: str = (
+        "\\b(?:password|passcode|passphrase|secret|api[ -]?key|token|"
+        "credit card|card number|cvv|iban|ssn|social security|private key)\\b"
+    )
+    command_verbs: Mapping[str, str] = field(
+        default_factory=lambda: {
+            "am": "is",
+            "have": "has",
+            "like": "likes",
+            "love": "loves",
+            "hate": "hates",
+            "prefer": "prefers",
+            "work": "works",
+            "live": "lives",
+            "need": "needs",
+            "want": "wants",
+            "use": "uses",
+            "study": "studies",
+            "own": "owns",
+            "drive": "drives",
+            "speak": "speaks",
+            "play": "plays",
+        }
+    )
 
     enabled: bool = True
     inject_activity: int = 5
@@ -883,6 +1100,14 @@ class WriteSettings:
         places: For each kind of place, words that identify it: found in the app's name or
             identifier, the page's host, or the window title. The first kind that matches
             decides the style of what is written.
+        edit_verbs: Verbs that start one edit of a text ("remove", "shorten"); an instruction is
+            split into steps only if every part starts with one.
+        step_split: Pattern (regular expression) that separates the edits of one instruction.
+        refers_back: Pattern for words that point at the last task ("again", "the same").
+        sign_off: Pattern for an email's closing line followed by a name.
+        gather_words: Pattern for words that mean a writing task needs facts from the web.
+        topic_lead: Pattern for the lead of a writing request that comes before its topic.
+        near_me: Pattern for "near me", "here": replaced by the place the user is in.
         instruction_starts: Words a field's text may start with that make it an instruction
             ("reply that I agree") rather than a draft to polish.
         sample_count: How many of the user's own earlier texts for that place are shown to the
@@ -891,7 +1116,39 @@ class WriteSettings:
             is kept: the latest messages matter most).
         max_field_chars: Longest field text or selection given to the model.
         max_output_chars: Longest text written.
+        edit_ordinals: Words for a place in a text ("second", "last") and their number (-1: last).
+        edit_delete: Pattern for the verbs that delete ("remove", "get rid of").
+        edit_polite: Pattern for polite words in front of an instruction, dropped before it is read.
+        edit_units: Pattern for the parts of a text an instruction can name (paragraph, line...).
+        edit_sign_off: Pattern for the start of a closing line ("best", "thanks").
+        edit_greeting: Pattern for the start of an opening line ("hi", "dear").
     """
+
+    edit_ordinals: Mapping[str, int] = field(
+        default_factory=lambda: {
+            "first": 1,
+            "second": 2,
+            "third": 3,
+            "fourth": 4,
+            "fifth": 5,
+            "sixth": 6,
+            "seventh": 7,
+            "eighth": 8,
+            "ninth": 9,
+            "tenth": 10,
+            "last": -1,
+            "final": -1,
+        }
+    )
+    edit_delete: str = "(?:delete|remove|drop|erase|cut|get rid of|take out)"
+    edit_polite: str = "^(?:(?:please|can you|could you|would you|just|hey)\\s+)+"
+    edit_units: str = "(?:paragraph|para|sentence|line)"
+    edit_sign_off: str = (
+        "^(?:best|regards|kind regards|best regards|warm regards|thanks|"
+        "thank you|cheers|sincerely|yours|many thanks|with thanks|talk soon|"
+        "take care)\\b"
+    )
+    edit_greeting: str = "^(?:hi|hello|hey|dear|good (?:morning|afternoon|evening))\\b"
 
     enabled: bool = True
     places: Mapping[str, tuple[str, ...]] = field(
@@ -918,6 +1175,35 @@ class WriteSettings:
         "translate", "suggest", "give", "decline", "accept", "thank", "congratulate", "invite",
         "politely", "/g",
     )  # fmt: skip
+    edit_verbs: tuple[str, ...] = (
+        "delete", "remove", "add", "insert", "make", "change", "replace", "shorten", "lengthen",
+        "rewrite", "rephrase", "translate", "fix", "correct", "capitalize", "capitalise",
+        "move", "swap", "expand", "simplify", "soften", "tighten", "rename", "drop", "cut",
+    )  # fmt: skip
+    step_split: str = (
+        r"\s*(?:;|,\s*and then\b|\band then\b|,\s*then\b|\bthen\b|,\s*and\b|,|\band\b)\s*"
+    )
+    refers_back: str = (
+        r"\b(?:again|same|redo|re-do|previous|before|last (?:one|email|message|reply|time)|"
+        r"that (?:email|message|reply|one)|like (?:that|the last)|instead)\b"
+    )
+    sign_off: str = (
+        r"(?P<head>(?:^|\n)(?:best|best regards|kind regards|warm regards|regards|sincerely|cheers|"
+        r"thanks|thank you|yours|many thanks)[^\n]{0,15}[,.]?)[ \t]*\n+(?P<name>[A-Z][\w'-]*"
+        r"(?: [A-Z][\w'-]*)?)\s*$"
+    )
+    gather_words: str = (
+        r"\b(?:weather|forecast|temperature|look up|look for|find out|search|research|latest|news|"
+        r"current|price of|how much|how many|score|stock|exchange rate|population|release date|"
+        r"opening hours|facts about|statistics)\b"
+    )
+    topic_lead: str = (
+        r"^(?:please\s+)?(?:write|draft|compose|reply|respond|send)\b.*?\b(?:about|saying|that|with|"
+        r"including|mentioning|containing|on)\s+"
+    )
+    near_me: str = (
+        r"\b(?:near me|nearby|around me|close to me|in my area|in my city|where i am|here)\b"
+    )
     sample_count: int = 3
     max_visible_chars: int = 4000
     max_field_chars: int = 4000

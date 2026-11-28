@@ -11,7 +11,7 @@ import time
 import warnings
 from collections.abc import Callable, Generator
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, ClassVar
+from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
 
 from langchain.agents import create_agent
@@ -150,6 +150,11 @@ class Tzara:
             mcp: The connected apps, whose tools it is given beside its own. ``None`` means none.
         """
         self._config = config or TzaraConfig()
+        write = self._config.write
+        self._gather = re.compile(write.gather_words, re.IGNORECASE)
+        self._topic = re.compile(write.topic_lead, re.IGNORECASE)
+        self._near_me = re.compile(write.near_me, re.IGNORECASE)
+        self._title_after = re.compile(self._config.research.title_after, re.IGNORECASE)
         self._model = model or self._config.model
         self._memory = memory or ConversationMemory()
         self._factory = ModelFactory(self._config.ollama)
@@ -224,9 +229,7 @@ class Tzara:
             gather=self._gather_materials,
             record=self._record_written_task,
         )
-        self._commands = (
-            MemoryCommands(personal.facts, personal.settings.max_fact_chars) if personal else None
-        )
+        self._commands = MemoryCommands(personal.facts, personal.settings) if personal else None
         self._create_agent()
         self._restore_history()
 
@@ -682,18 +685,6 @@ class Tzara:
             for stem in stems
         )
 
-    GATHER: ClassVar[re.Pattern[str]] = re.compile(
-        r"\b(?:weather|forecast|temperature|look up|look for|find out|search|research|latest|news|"
-        r"current|price of|how much|how many|score|stock|exchange rate|population|release date|"
-        r"opening hours|facts about|statistics)\b",
-        re.IGNORECASE,
-    )
-    TOPIC: ClassVar[re.Pattern[str]] = re.compile(
-        r"^(?:please\s+)?(?:write|draft|compose|reply|respond|send)\b.*?\b(?:about|saying|that|with|"
-        r"including|mentioning|containing|on)\s+",
-        re.IGNORECASE,
-    )
-
     def _gather_materials(self, asked: str, app: str) -> str:
         """What a writing task needs besides the screen, found in code before the text is written.
 
@@ -702,8 +693,8 @@ class Tzara:
         email to Anna with the weather in Berlin" then has the weather in it.
         """
         parts: list[str] = []
-        if self._researcher is not None and self.GATHER.search(asked):
-            topic = self.TOPIC.sub("", asked).strip() or asked
+        if self._researcher is not None and self._gather.search(asked):
+            topic = self._topic.sub("", asked).strip() or asked
             try:
                 evidence = self._researcher.research(topic)
             except Exception as error:
@@ -725,11 +716,11 @@ class Tzara:
                 word in lowered for word in re.split(r"[-_]", app.lower()) if len(word) >= 4
             ):
                 continue
-            titled = AppRouter.TITLE.search(asked)
+            titled = self._title_after.search(asked)
             query = (
                 (titled.group("quoted") or titled.group("plain")).strip()
                 if titled
-                else self.TOPIC.sub("", asked).strip() or asked
+                else self._topic.sub("", asked).strip() or asked
             )
             tool = next((t for t in self._tools if t.name == name), None)
             if tool is None:
@@ -759,14 +750,9 @@ class Tzara:
         except Exception:
             logger.warning("could not put the written task into the conversation", exc_info=True)
 
-    NEAR_ME: ClassVar[re.Pattern[str]] = re.compile(
-        r"\b(?:near me|nearby|around me|close to me|in my area|in my city|where i am|here)\b",
-        re.IGNORECASE,
-    )
-
     def _localised(self, text: str) -> str:
         """``text`` with "near me" and "here" replaced by the place the user is in."""
-        return self.NEAR_ME.sub(f"in {self._turn_place}", text)
+        return self._near_me.sub(f"in {self._turn_place}", text)
 
     def _home_place(self) -> str | None:
         """Where the user is now (their Mac's location), else the city they said they live in."""
@@ -836,7 +822,9 @@ class Tzara:
         searches = self._app_searches()
         fetches = self._app_tools_named(AppRouter.FETCH, ("id", "url", "page_id"))
         if searches or fetches:
-            router = AppRouter(searches, fetches, lambda: self._turn_open_page)
+            router = AppRouter(
+                searches, fetches, lambda: self._turn_open_page, self._config.research
+            )
             middleware.insert(1 if self._config.web.enabled else 0, router)
         middleware.append(EmptyReplyRetry())
         if self._app_rules:

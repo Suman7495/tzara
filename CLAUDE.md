@@ -62,7 +62,9 @@ requirements.lock    # exact tested versions of every dependency
 - **Classes, not loose functions.** Behaviour lives in a class. There are no module-level
   helper functions; the only entry points are `Launcher.main` and `python -m tzara`.
 - **No hard-coded values in logic.** Tunables go in `config.py` and prompt text in
-  `prompts.py`, so tests and users can override them.
+  `prompts.py`, so tests and users can override them. This includes the words and patterns that read what a person
+  wrote (edit verbs, memory commands, "near me", sign-offs): they are settings (`WriteSettings`, `MemorySettings`,
+  `ResearchSettings`, `WebSettings`), and the classes compile them from the settings they are given.
 - **Google-style docstrings** on every public module, class and method (enforced by ruff).
 - **Type hints everywhere**; `mypy` runs with `disallow_untyped_defs` on `src/tzara`.
 

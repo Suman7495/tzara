@@ -37,19 +37,9 @@ class QuestionRules:
         """
         self._starts = settings.question_starts
         self._words = settings.question_words
+        self._greeting = re.compile(settings.greeting, re.IGNORECASE)
+        self._contractions = settings.contractions
         self._chat = [re.compile(pattern, re.IGNORECASE) for pattern in settings.chat_patterns]
-
-    GREETING: ClassVar[re.Pattern[str]] = re.compile(
-        r"^\s*(?:(?:hi|hello|hey|yo|ok|okay|so|well|please|there)\b[\s,!.:-]*)+", re.IGNORECASE
-    )
-    CONTRACTIONS: ClassVar[dict[str, str]] = {
-        "whats": "what",
-        "whos": "who",
-        "wheres": "where",
-        "hows": "how",
-        "whens": "when",
-        "whys": "why",
-    }
 
     def topical(self, message: str) -> bool:
         """Whether the message has a word plainly about the outside world (weather, news...)."""
@@ -62,12 +52,12 @@ class QuestionRules:
         A greeting in front ("hey, whats the weather") is not part of the question, and
         "what's" is "what".
         """
-        text = self.GREETING.sub("", message.strip().lower().replace("\u2019", "'"))
+        text = self._greeting.sub("", message.strip().lower().replace("\u2019", "'"))
         if not text or any(pattern.search(text) for pattern in self._chat):
             return False
         bare = text.replace("'", "")
         words = bare.split()
-        first = self.CONTRACTIONS.get(words[0].strip(",.!?:"), words[0].strip(",.!?:"))
+        first = self._contractions.get(words[0].strip(",.!?:"), words[0].strip(",.!?:"))
         return (
             "?" in text or first in self._starts or any(word in f" {bare} " for word in self._words)
         )
@@ -172,12 +162,6 @@ class AppRouter(AgentMiddleware):
 
     ROUTED: ClassVar[str] = "appsearch-"  # must not contain ResearchRouter.ROUTED
     SEARCH: ClassVar[re.Pattern[str]] = re.compile(r"(?:^|[-_])search$")
-    TITLE: ClassVar[re.Pattern[str]] = re.compile(
-        r"""\b(?:called|named|titled)\s+(?:["“'](?P<quoted>[^"”']+)["”']"""
-        r"""|(?P<plain>[^"”'.,;\n]+?)(?:\s+(?:page|doc|document|database|and|with|in|on)\b|[.,;\n]|$))""",
-        re.IGNORECASE,
-    )
-    GENERIC: ClassVar[frozenset[str]] = frozenset({"microsoft", "files", "work", "app", "apps"})
     MIN_WORD: ClassVar[int] = 4
 
     FETCH: ClassVar[re.Pattern[str]] = re.compile(r"(?:^|[-_])fetch$")
@@ -187,6 +171,7 @@ class AppRouter(AgentMiddleware):
         searches: dict[str, tuple[str, str]],
         fetches: dict[str, tuple[str, str]] | None = None,
         open_page: Callable[[], tuple[str, str] | None] | None = None,
+        settings: ResearchSettings | None = None,
     ) -> None:
         """Create the router.
 
@@ -199,22 +184,23 @@ class AppRouter(AgentMiddleware):
                 turn's message is about it. That page is read first, here, in code: the page
                 text on the screen is a browser notice, and the model otherwise answered about
                 the page from its own earlier words.
+            settings: The words that tell a request for the user's own content, and an app's
+                generic name words. Defaults to the standard settings.
         """
         super().__init__()
+        settings = settings or ResearchSettings()
+        self._own = re.compile(settings.own_content, re.IGNORECASE)
+        self._title = re.compile(settings.title_after, re.IGNORECASE)
+        self._generic = frozenset(settings.app_generic_words)
         self._fetches = fetches or {}
         self._open_page = open_page or (lambda: None)
         self._searches = searches
         self._words: dict[str, str] = {}
         for app in searches:
             for word in [app, *app.split("-")]:
-                if len(word) >= self.MIN_WORD and word.lower() not in self.GENERIC:
+                if len(word) >= self.MIN_WORD and word.lower() not in self._generic:
                     self._words.setdefault(word.lower(), app)
 
-    OWN: ClassVar[re.Pattern[str]] = re.compile(
-        r"\b(?:my|our)\b.{0,40}\b(?:notes?|pages?|docs?|documents?|wiki|workspace|roadmap|projects?|"
-        r"meeting notes|data ?room|notion)\b|\b(?:data ?room|meeting notes)\b",
-        re.IGNORECASE,
-    )
     CONTEXT_LINE: ClassVar[re.Pattern[str]] = re.compile(r"^(?:App|Window|Address): (.+)$", re.M)
 
     def _on_screen(self, word: str, context: str) -> bool:
@@ -239,7 +225,7 @@ class AppRouter(AgentMiddleware):
             if re.search(rf"\b{re.escape(word)}\b", lowered):
                 chosen = app
                 break
-        own = self._searches and not self._on_screen_any(context) and self.OWN.search(text)
+        own = self._searches and not self._on_screen_any(context) and self._own.search(text)
         if chosen is None and own:
             # "my meeting notes", "the data room": the user's own content lives in a connected app
             # even when the message does not name it. A small model otherwise reaches for the web
@@ -248,7 +234,7 @@ class AppRouter(AgentMiddleware):
         if chosen is None:
             return None
         tool, argument = self._searches[chosen]
-        found = self.TITLE.search(text)
+        found = self._title.search(text)
         query = (found.group("quoted") or found.group("plain")).strip() if found else text.strip()
         return {
             "name": tool,

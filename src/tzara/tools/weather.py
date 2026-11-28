@@ -23,86 +23,6 @@ class WeatherReport:
     GEOCODE: ClassVar[str] = "https://geocoding-api.open-meteo.com/v1/search"
     FORECAST: ClassVar[str] = "https://api.open-meteo.com/v1/forecast"
     SOURCE: ClassVar[str] = "[open-meteo.com](https://open-meteo.com/)"
-    TRIGGERS: ClassVar[re.Pattern[str]] = re.compile(
-        r"\b(weather|forecast|temperature|raining|rain|snowing|snow|sunny|humidity|windy|umbrella)\b"
-    )
-    AFTER_IN: ClassVar[re.Pattern[str]] = re.compile(r"\b(?:in|for|at|near|around)\s+([^?.!,;]+)")
-    NOISE: ClassVar[frozenset[str]] = frozenset(
-        {
-            "a",
-            "an",
-            "the",
-            "is",
-            "are",
-            "was",
-            "be",
-            "it",
-            "its",
-            "like",
-            "what",
-            "whats",
-            "how",
-            "hows",
-            "hey",
-            "hi",
-            "please",
-            "tell",
-            "me",
-            "give",
-            "show",
-            "check",
-            "get",
-            "will",
-            "going",
-            "to",
-            "there",
-            "outside",
-            "today",
-            "tonight",
-            "tomorrow",
-            "now",
-            "right",
-            "currently",
-            "this",
-            "week",
-            "weekend",
-            "morning",
-            "evening",
-            "afternoon",
-            "yesterday",
-            "current",
-            "latest",
-            "and",
-            "or",
-            "of",
-            "on",
-            "with",
-            "any",
-            "some",
-            "weather",
-            "forecast",
-            "temperature",
-            "rain",
-            "raining",
-            "snow",
-            "snowing",
-            "sunny",
-            "humidity",
-            "windy",
-            "umbrella",
-            "need",
-            "do",
-            "does",
-            "i",
-            "you",
-            "can",
-            "could",
-            "would",
-            "should",
-            "my",
-            "our",
-        }
-    )
     CODES: ClassVar[dict[int, str]] = {
         0: "clear sky",
         1: "mostly clear",
@@ -143,6 +63,9 @@ class WeatherReport:
             client: HTTP client. Replaced in tests.
         """
         self._settings = settings
+        self._triggers = re.compile(settings.weather_words)
+        self._after_in = re.compile(settings.weather_place)
+        self._noise = frozenset(settings.weather_noise)
         self._client = client or httpx.Client(
             timeout=settings.search_timeout_seconds, headers={"User-Agent": settings.user_agent}
         )
@@ -154,11 +77,11 @@ class WeatherReport:
         words before the weather word ("Darmstadt weather").
         """
         text = question.lower().replace("\u2019", "'").strip()
-        trigger = self.TRIGGERS.search(text)
+        trigger = self._triggers.search(text)
         if trigger is None:
             return None
         candidates: list[str] = []
-        for found in self.AFTER_IN.finditer(text):
+        for found in self._after_in.finditer(text):
             candidates.append(found.group(1))
         candidates.append(text[: trigger.start()])
         for candidate in candidates:
@@ -166,7 +89,7 @@ class WeatherReport:
             kept = [
                 word
                 for word in words
-                if word and word.replace("'", "") not in self.NOISE and word not in self.NOISE
+                if word and word.replace("'", "") not in self._noise and word not in self._noise
             ]
             if kept:
                 return " ".join(kept[-3:]).title()[:60]
@@ -178,7 +101,7 @@ class WeatherReport:
 
     def asks_about_weather(self, question: str) -> bool:
         """Whether the question is about the weather at all, whether or not it names a place."""
-        return self.TRIGGERS.search(question.lower()) is not None
+        return self._triggers.search(question.lower()) is not None
 
     def report(self, question: str, home: str | None = None) -> str:
         """The weather for the place in ``question`` (or ``home``), as text to answer from.

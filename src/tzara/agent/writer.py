@@ -103,6 +103,11 @@ class InlineWriter:
         """
         self._model = model
         self._config = config
+        flags = re.IGNORECASE
+        self._exact_edits = TextEdit(config.write)
+        self._step_split = re.compile(config.write.step_split, flags)
+        self._refers = re.compile(config.write.refers_back, flags)
+        self._sign_off = re.compile(config.write.sign_off, flags)
         self._personal = personal
         self._gather = gather
         self._record = record
@@ -140,32 +145,15 @@ class InlineWriter:
         starts = self._config.write.instruction_starts
         return "instruct" if any(text.startswith(word) for word in starts) else "polish"
 
-    EDIT_VERBS: ClassVar[frozenset[str]] = frozenset(
-        {
-            "delete", "remove", "add", "insert", "make", "change", "replace", "shorten", "lengthen",
-            "rewrite", "rephrase", "translate", "fix", "correct", "capitalize", "capitalise",
-            "move", "swap", "expand", "simplify", "soften", "tighten", "rename", "drop", "cut",
-        }
-    )  # fmt: skip
-    STEP_SPLIT: ClassVar[re.Pattern[str]] = re.compile(
-        r"\s*(?:;|,\s*and then\b|\band then\b|,\s*then\b|\bthen\b|,\s*and\b|,|\band\b)\s*",
-        re.IGNORECASE,
-    )
-    REFERS: ClassVar[re.Pattern[str]] = re.compile(
-        r"\b(?:again|same|redo|re-do|previous|before|last (?:one|email|message|reply|time)|"
-        r"that (?:email|message|reply|one)|like (?:that|the last)|instead)\b",
-        re.IGNORECASE,
-    )
-
-    @classmethod
-    def steps(cls, instruction: str) -> list[str]:
+    def steps(self, instruction: str) -> list[str]:
         """An instruction of several edits ("remove the greeting and make it shorter") as its steps.
 
         A small model does one clear change well and several at once badly, so each is done by
         itself. An instruction is split only if every part starts with an editing verb.
         """
-        parts = [p.strip(" ,.;") for p in cls.STEP_SPLIT.split(instruction) if p.strip(" ,.;")]
-        if len(parts) > 1 and all(part.split()[0].lower() in cls.EDIT_VERBS for part in parts):
+        parts = [p.strip(" ,.;") for p in self._step_split.split(instruction) if p.strip(" ,.;")]
+        verbs = self._config.write.edit_verbs
+        if len(parts) > 1 and all(part.split()[0].lower() in verbs for part in parts):
             return parts
         return [instruction]
 
@@ -236,14 +224,14 @@ class InlineWriter:
         current = text
         steps = self.steps(guidance)
         for step in steps:
-            if selected and len(steps) == 1 and TextEdit.deletes_the_selection(step):
+            if selected and len(steps) == 1 and self._exact_edits.deletes_the_selection(step):
                 current = ""
                 continue
-            exact = TextEdit.apply(step, current)
+            exact = self._exact_edits.apply(step, current)
             if exact is not None:
                 current = exact
                 continue
-            if TextEdit.target_missing(step, current):
+            if self._exact_edits.target_missing(step, current):
                 logger.info("write: the step %r names something the text does not have", step[:60])
                 continue
             revised = self._revise(place, context, system, step, current)
@@ -273,20 +261,13 @@ class InlineWriter:
             logger.info("write: the edit came back unchanged (%s)", kind)
         return None
 
-    SIGN_OFF: ClassVar[re.Pattern[str]] = re.compile(
-        r"(?P<head>(?:^|\n)(?:best|best regards|kind regards|warm regards|regards|sincerely|cheers|"
-        r"thanks|thank you|yours|many thanks)[^\n]{0,15}[,.]?)[ \t]*\n+(?P<name>[A-Z][\w'-]*"
-        r"(?: [A-Z][\w'-]*)?)\s*$",
-        re.IGNORECASE,
-    )
-
     def _without_invented_name(self, text: str) -> str:
         """The email without a name after the sign-off, unless that is the user's own name.
 
         A small model signs emails with a name it made up. The user's name is known only if they
         said so (a fact "The user's name is X"); otherwise the sign-off stands alone.
         """
-        found = self.SIGN_OFF.search(text)
+        found = self._sign_off.search(text)
         if found is None:
             return text
         known = ""
@@ -359,7 +340,7 @@ class InlineWriter:
             task = self._personal.tasks.last("write")
             if task is not None:
                 # Only what it needs: the request, and the text too if this one refers back to it.
-                text = f"\nWhat you wrote: {task.result}" if self.REFERS.search(asked) else ""
+                text = f"\nWhat you wrote: {task.result}" if self._refers.search(asked) else ""
                 last = prompts.write_last_task.format(asked=task.asked, app=task.app, text=text)
         style = prompts.write_styles.get(place, prompts.write_styles["other"])
         return prompts.write_system.format(style=style, facts=facts, samples=samples) + last

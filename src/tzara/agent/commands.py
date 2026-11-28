@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import logging
 import re
-from typing import ClassVar
 
+from tzara.config import MemorySettings
 from tzara.memory import FactStore, MemoryRefused
 from tzara.tools.web import Sanitizer
 
@@ -21,61 +21,24 @@ class MemoryCommands:
     :meth:`handle` returns the reply, or ``None`` when the message is not a memory command.
     """
 
-    REMEMBER: ClassVar[re.Pattern[str]] = re.compile(
-        r"^\s*(?:please\s+|hey\s+|can you\s+|could you\s+)?(?:remember|memori[sz]e|make a note|"
-        r"note down|note|save|keep in mind|don'?t forget|do not forget)\b(?:\s+that)?"
-        r"\s*[:,-]?\s*(.*)$",
-        re.IGNORECASE | re.DOTALL,
-    )
-    FORGET: ClassVar[re.Pattern[str]] = re.compile(
-        r"^\s*(?:please\s+)?forget\b(?:\s+(?:about|that))?\s+(.+)$", re.IGNORECASE
-    )
-    RECALL: ClassVar[re.Pattern[str]] = re.compile(
-        r"^\s*(?:hey\s+)?(?:what|which)\b.*\b(?:do you|have you|did you)\b.*\b(?:know|remember|"
-        r"learned|learnt|stored|saved)\b.*\b(?:about me|about us|so far)?\s*\??\s*$|"
-        r"^\s*(?:show|list)\s+(?:me\s+)?(?:my\s+)?(?:memory|memories|what you remember)\b",
-        re.IGNORECASE,
-    )
-    WHERE: ClassVar[re.Pattern[str]] = re.compile(
-        r"^\s*(?:hey\s+)?(?:where am i|where are we|where do i live|"
-        r"what(?:'s| is) my (?:current )?(?:location|city|place))\b",
-        re.IGNORECASE,
-    )
-    THIS: ClassVar[frozenset[str]] = frozenset({"this", "it", "that", "this one", "all this"})
-    SECRET: ClassVar[re.Pattern[str]] = re.compile(
-        r"\b(?:password|passcode|passphrase|secret|api[ -]?key|token|credit card|card number|"
-        r"cvv|iban|ssn|social security|private key)\b",
-        re.IGNORECASE,
-    )
-    VERBS: ClassVar[dict[str, str]] = {
-        "am": "is",
-        "have": "has",
-        "like": "likes",
-        "love": "loves",
-        "hate": "hates",
-        "prefer": "prefers",
-        "work": "works",
-        "live": "lives",
-        "need": "needs",
-        "want": "wants",
-        "use": "uses",
-        "study": "studies",
-        "own": "owns",
-        "drive": "drives",
-        "speak": "speaks",
-        "play": "plays",
-    }
-
-    def __init__(self, facts: FactStore, max_chars: int, listed: int = 12) -> None:
+    def __init__(self, facts: FactStore, settings: MemorySettings, listed: int = 12) -> None:
         """Create the commands.
 
         Args:
             facts: Where facts are kept.
-            max_chars: Longest fact (the same limit the store applies).
+            settings: Longest fact (the same limit the store applies) and the words of the commands.
             listed: Most facts named when asked what is known.
         """
         self._facts = facts
-        self._max = max_chars
+        self._max = settings.max_fact_chars
+        flags = re.IGNORECASE
+        self._remember_command = re.compile(settings.command_remember, flags | re.DOTALL)
+        self._forget_command = re.compile(settings.command_forget, flags)
+        self._recall_command = re.compile(settings.command_recall, flags)
+        self._where_command = re.compile(settings.command_where, flags)
+        self._secret = re.compile(settings.command_secret, flags)
+        self._this = frozenset(settings.command_this)
+        self._verbs = settings.command_verbs
         self._listed = listed
 
     def handle(
@@ -91,13 +54,13 @@ class MemoryCommands:
         """
         if len(text) > 600:
             return None
-        if match := self.REMEMBER.match(text):
+        if match := self._remember_command.match(text):
             return self._remember(match.group(1).strip(), selection, typing)
-        if match := self.FORGET.match(text):
+        if match := self._forget_command.match(text):
             return self._forget(match.group(1).strip().rstrip(".!"))
-        if self.RECALL.match(text):
+        if self._recall_command.match(text):
             return self._recall()
-        if self.WHERE.match(text):
+        if self._where_command.match(text):
             return self._where(place)
         return None
 
@@ -105,7 +68,7 @@ class MemoryCommands:
 
     def _remember(self, what: str, selection: str, typing: str) -> str | None:
         words = what.rstrip(".!").strip().lower()
-        if not words or words in self.THIS:
+        if not words or words in self._this:
             source = Sanitizer.clean(selection or typing).strip()
             if not source:
                 return "Select the text you want me to remember, then ask again."
@@ -114,7 +77,7 @@ class MemoryCommands:
             return None
         else:
             fact = self._statement(Sanitizer.clean(what))
-        if self.SECRET.search(fact):
+        if self._secret.search(fact):
             return (
                 "I don't keep passwords, keys or card numbers. "
                 "Please store those in a password manager."
@@ -135,8 +98,8 @@ class MemoryCommands:
             return self._clip(f"The user is {match.group(1)}.")
         if match := re.match(r"(?i)^i\s+(\w+)\s+(.+)$", line):
             verb = match.group(1).lower()
-            if verb in self.VERBS:
-                return self._clip(f"The user {self.VERBS[verb]} {match.group(2)}.")
+            if verb in self._verbs:
+                return self._clip(f"The user {self._verbs[verb]} {match.group(2)}.")
         return self._clip(f"The user said: {line}.")
 
     def _clip(self, fact: str) -> str:
