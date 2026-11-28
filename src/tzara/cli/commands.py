@@ -33,6 +33,9 @@ class SessionController(Protocol):
     def show_memory(self) -> None:
         """Print what Tzara remembers about the user."""
 
+    def show_apps(self) -> None:
+        """Print the apps connected through MCP."""
+
     def erase_memory(self) -> None:
         """Forget every fact and every stored conversation."""
 
@@ -136,6 +139,7 @@ class BuiltinCommands:
         registry.register("/set-model", "Switch model: /set-model <model>", self.set_model)
         registry.register("/new", "Forget the conversation and start a new one.", self.new)
         registry.register("/memory", "Show what Tzara remembers about you.", self.memory)
+        registry.register("/apps", "Show the connected apps and what Tzara can use.", self.apps)
         registry.register(
             "/erase-memory", "Forget everything: /erase-memory yes", self.erase_memory
         )
@@ -176,6 +180,10 @@ class BuiltinCommands:
     def new(self, _arguments: Sequence[str]) -> None:
         """Start a new conversation."""
         self._controller.new_conversation()
+
+    def apps(self, _arguments: Sequence[str]) -> None:
+        """Handle ``/apps``."""
+        self._controller.show_apps()
 
     def memory(self, _arguments: Sequence[str]) -> None:
         """Show what is remembered about the user."""

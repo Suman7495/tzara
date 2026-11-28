@@ -5,6 +5,26 @@ public enum ToolState: String, Equatable, Sendable {
     case started, completed, failed
 }
 
+/// A button the assistant offers under a reply that asks something.
+public struct ChatChoice: Equatable, Sendable, Decodable {
+    public let label: String
+    /// What pressing it sends, shown as the user's next message.
+    public let message: String
+    /// The question to search the web for, if pressing it should search.
+    public let searchFor: String?
+
+    public init(label: String, message: String, searchFor: String? = nil) {
+        self.label = label
+        self.message = message
+        self.searchFor = searchFor
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case label, message
+        case searchFor = "search_for"
+    }
+}
+
 /// What the server sends while it writes a reply.
 public enum ChatEvent: Equatable, Sendable {
     /// A piece of the reply.
@@ -15,6 +35,8 @@ public enum ChatEvent: Equatable, Sendable {
     /// A tool the assistant uses started, finished, or failed. Unlike ``status``, which is a
     /// sentence for the person, this names the tool so the app can tell when it is all done.
     case tool(name: String, state: ToolState)
+    /// Buttons to show under the reply, for a question it asks ("Search online?").
+    case choices([ChatChoice])
     /// The reply is complete.
     case done(firstTokenSeconds: Double?, characters: Int)
     /// The reply failed part-way.
@@ -107,6 +129,9 @@ public struct EventStreamParser {
             guard let tool = try? decoder.decode(ToolPayload.self, from: payload) else { return unreadable }
             guard let state = ToolState(rawValue: tool.state) else { return nil }
             return .tool(name: tool.name, state: state)
+        case "choices":
+            guard let choices = try? decoder.decode(ChoicesPayload.self, from: payload) else { return unreadable }
+            return .choices(choices.options)
         case "done":
             guard let done = try? decoder.decode(DonePayload.self, from: payload) else { return unreadable }
             return .done(firstTokenSeconds: done.firstTokenSeconds, characters: done.characters)
@@ -119,6 +144,7 @@ public struct EventStreamParser {
     }
 
     private struct TokenPayload: Decodable { let text: String }
+    private struct ChoicesPayload: Decodable { let options: [ChatChoice] }
     private struct ErrorPayload: Decodable { let message: String }
     private struct ToolPayload: Decodable {
         let name: String

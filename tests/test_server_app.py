@@ -207,8 +207,9 @@ class TestStatusAndModels:
         assert ollama[0] == {
             "id": "ollama:qwen3:8b",
             "description": "Qwen3 8B (default, fast, reliable tools, local)",
+            "need": "ready",
         }
-        assert all(set(model) == {"id", "description"} for model in ollama)
+        assert all(set(model) == {"id", "description", "need"} for model in ollama)
 
 
 class TestScreenContext:
@@ -218,6 +219,30 @@ class TestScreenContext:
         assert client.post("/v1/chat", headers=AUTH, json=body).status_code == 200
         context = agents.created[0].contexts[0]
         assert (context.app, context.selection, context.window) == ("Notes", "hola", "")
+
+    def test_the_focus_and_the_texts_reach_the_agent(self, build, agents):
+        client, _, _ = build()
+        context = {
+            "app": "Outlook",
+            "bundle": "com.microsoft.Outlook",
+            "focus": 'text area "Message body"',
+            "typing": "Hi Anna",
+            "visible": "From: Anna",
+        }
+        client.post("/v1/chat", headers=AUTH, json={"message": "reply", "context": context})
+        got = agents.created[0].contexts[0]
+        assert (got.bundle, got.focus, got.typing, got.visible) == (
+            "com.microsoft.Outlook",
+            'text area "Message body"',
+            "Hi Anna",
+            "From: Anna",
+        )
+
+    def test_the_search_button_sends_the_question_to_search_for(self, build, agents):
+        client, _, _ = build()
+        body = {"message": "Search online.", "search_for": "what is the capital of Australia"}
+        assert client.post("/v1/chat", headers=AUTH, json=body).status_code == 200
+        assert agents.created[0].searches == ["what is the capital of Australia"]
 
     def test_a_message_without_context_has_none(self, build, agents):
         client, _, _ = build()
@@ -394,7 +419,7 @@ class TestConversation:
         client, _, _ = build()
         response = client.get("/v1/conversation", headers=AUTH)
         assert response.status_code == 200
-        assert response.json() == {"messages": []}
+        assert response.json() == {"id": None, "messages": []}
 
     def test_returns_what_was_said_in_order(self, build, agents):
         agents.conversation = [
@@ -403,10 +428,11 @@ class TestConversation:
         ]
         client, _, _ = build()
         assert client.get("/v1/conversation", headers=AUTH).json() == {
+            "id": None,
             "messages": [
                 {"role": "user", "text": "What is 6 * 7?"},
                 {"role": "assistant", "text": "42"},
-            ]
+            ],
         }
 
     def test_can_be_read_while_a_reply_is_being_written(self, build, agents):
@@ -843,3 +869,38 @@ class TestWakeEndpoint:
     def test_needs_the_token(self, build):
         client, _, _ = build()
         assert client.post("/v1/wake").status_code == 401
+
+
+class TestWriting:
+    def test_the_text_comes_back_with_what_it_replaces(self, build, agents):
+        client, _, _ = build()
+        agents.writes.clear()
+        reply = client.post("/v1/write", json={"app": "Slack", "field": "hi"}, headers=AUTH)
+        assert reply.status_code == 200
+        assert reply.json() == {
+            "text": "Sounds good!",
+            "mode": "reply",
+            "place": "chat",
+            "replaces": "nothing",
+        }
+        assert agents.writes[0].app == "Slack"
+
+    def test_it_needs_the_token(self, build):
+        client, _, _ = build()
+        assert client.post("/v1/write", json={}).status_code == 401
+
+    def test_it_is_refused_while_a_reply_is_written(self, build, agents):
+
+        client, service, _ = build()
+        assert service._lock.acquire(blocking=False)
+        try:
+            assert client.post("/v1/write", json={}, headers=AUTH).status_code == 409
+        finally:
+            service._lock.release()
+
+
+class TestCarryingOnAConversation:
+    def test_an_unknown_one_is_404_and_the_current_id_is_reported(self, build):
+        client, _, _ = build()
+        assert client.post("/v1/conversation/resume/999", headers=AUTH).status_code == 404
+        assert "id" in client.get("/v1/conversation", headers=AUTH).json()

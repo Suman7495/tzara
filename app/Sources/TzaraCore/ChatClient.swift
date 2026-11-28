@@ -57,18 +57,99 @@ public final class ChatClient: @unchecked Sendable {
 
     /// The models the server knows about, grouped by provider.
     public func models() async throws -> [ModelProvider] {
-        try await decoded(ModelCatalog.self, path: "/v1/models").providers
+        try await modelOverview().providers
+    }
+
+    /// The models with what each still needs, and the downloads under way.
+    public func modelOverview() async throws -> ModelOverview {
+        try await decoded(ModelOverview.self, path: "/v1/models")
+    }
+
+    /// Starts downloading a local model. It goes on in the background: ask ``modelOverview()``.
+    public func downloadModel(_ model: String) async throws {
+        _ = try await send(path: "/v1/models/download", method: "POST", body: ["model": model])
+    }
+
+    /// Saves the API key of a cloud provider (`anthropic`, `openai`, `google_genai`).
+    public func saveKey(provider: String, key: String) async throws {
+        _ = try await send(path: "/v1/keys/\(provider)", method: "PUT", body: ["key": key])
     }
 
     /// The conversation so far, so a freshly opened chat can show it.
     public func history() async throws -> [HistoryItem] {
-        try await decoded(Conversation.self, path: "/v1/conversation").messages
+        try await conversation().messages
+    }
+
+    /// The conversation in progress, with its id in the stored log (`nil` before anything is said).
+    public func conversation() async throws -> ConversationSnapshot {
+        try await decoded(ConversationSnapshot.self, path: "/v1/conversation")
+    }
+
+    /// Carries on an earlier conversation; returns it. The current one is kept in the list.
+    public func resumeConversation(_ id: Int) async throws -> ConversationSnapshot {
+        try await decoded(ConversationSnapshot.self, path: "/v1/conversation/resume/\(id)", method: "POST")
     }
 
     /// What Tzara remembers about the user, for the settings screen.
     public func memory() async throws -> MemoryOverview {
         try await decoded(MemoryOverview.self, path: "/v1/memory")
     }
+
+    /// Everything said in one stored conversation.
+    public func memoryConversation(_ id: Int) async throws -> [StoredLine] {
+        struct Body: Decodable { let messages: [StoredLine] }
+        return try await decoded(Body.self, path: "/v1/memory/conversations/\(id)").messages
+    }
+
+    /// The apps Tzara is connected to, and the ready-made ones that can be added.
+    public func apps() async throws -> AppsOverview {
+        try await decoded(AppsOverview.self, path: "/v1/apps")
+    }
+
+    /// Adds an app (a ready-made one by its id, or one of the user's own). It connects in the
+    /// background: ask for ``apps()`` again to see how far it has got.
+    public func addApp(_ app: NewApp) async throws -> AppsOverview {
+        try await decoded(AppsOverview.self, path: "/v1/apps", method: "POST", body: app, timeout: ChatClient.quickTimeout)
+    }
+
+    /// Removes an app. It disconnects in the background.
+    public func removeApp(_ name: String) async throws -> AppsOverview {
+        let encoded = name.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? name
+        return try await decoded(AppsOverview.self, path: "/v1/apps/\(encoded)", method: "DELETE")
+    }
+
+    /// Starts signing in to an app: its login runs and shows a link and a code.
+    @discardableResult
+    public func startSignIn(_ app: String) async throws -> SignInState {
+        let encoded = app.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? app
+        return try await decoded(SignInState.self, path: "/v1/apps/\(encoded)/signin", method: "POST")
+    }
+
+    /// How signing in to an app is going.
+    public func signInState(_ app: String) async throws -> SignInState {
+        let encoded = app.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? app
+        return try await decoded(SignInState.self, path: "/v1/apps/\(encoded)/signin")
+    }
+
+    /// Every tool of an app, with whether the model may use it.
+    public func appTools(_ app: String) async throws -> AppToolList {
+        let encoded = app.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? app
+        return try await decoded(AppToolList.self, path: "/v1/apps/\(encoded)/tools")
+    }
+
+    /// Chooses the tools of an app the model may use. The server refuses too many, and says why.
+    public func setAppTools(_ app: String, tools: [String]) async throws {
+        let encoded = app.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? app
+        _ = try await send(path: "/v1/apps/\(encoded)/tools", method: "PUT", body: ["tools": tools])
+    }
+
+    /// Asks for text to put in the user's field in another app. Takes as long as the model needs.
+    public func write(_ body: WriteBody) async throws -> WrittenText {
+        try await decoded(WrittenText.self, path: "/v1/write", method: "POST", body: body,
+                          timeout: Self.writeTimeout)
+    }
+
+    private static let writeTimeout: TimeInterval = 120
 
     /// Makes Tzara forget one remembered fact.
     public func forgetFact(_ id: Int) async throws {
@@ -108,13 +189,17 @@ public final class ChatClient: @unchecked Sendable {
     ///
     /// Stop consuming the stream (or cancel the task reading it) to cancel the reply: the
     /// connection closes and the server stops writing.
-    public func stream(_ message: String, context: ScreenContext? = nil) -> AsyncThrowingStream<ChatEvent, Error> {
+    public func stream(
+        _ message: String, context: ScreenContext? = nil, searchFor: String? = nil
+    ) -> AsyncThrowingStream<ChatEvent, Error> {
         AsyncThrowingStream { continuation in
             let task = Task {
                 do {
                     let request = try makeRequest(
                         path: "/v1/chat", method: "POST",
-                        body: ChatBody(message: message, context: context.flatMap { $0.isEmpty ? nil : $0 }),
+                        body: ChatBody(
+                            message: message, context: context.flatMap { $0.isEmpty ? nil : $0 },
+                            searchFor: searchFor),
                         timeout: Self.replyTimeout)
                     let (bytes, response) = try await session.bytes(for: request)
                     if let http = response as? HTTPURLResponse, http.statusCode != 200 {
@@ -130,7 +215,7 @@ public final class ChatClient: @unchecked Sendable {
                         continuation.yield(event)
                         switch event {
                         case .done, .error: continuation.finish(); return
-                        case .token, .status, .tool: break
+                        case .token, .status, .tool, .choices: break
                         }
                     }
                     continuation.finish()
@@ -242,8 +327,6 @@ public final class ChatClient: @unchecked Sendable {
     }
 
     private struct ErrorBody: Decodable { let detail: String }
-    private struct ModelCatalog: Decodable { let providers: [ModelProvider] }
-    private struct Conversation: Decodable { let messages: [HistoryItem] }
     private struct ModelAnswer: Decodable { let model: String }
     private struct NameAnswer: Decodable { let name: String }
     /// Lets a request body be any `Encodable` value, not only a dictionary of strings.
@@ -258,4 +341,11 @@ public final class ChatClient: @unchecked Sendable {
 private struct ChatBody: Encodable {
     let message: String
     let context: ScreenContext?
+    /// The question the "Search online" button searches for; the message is then only its label.
+    let searchFor: String?
+
+    private enum CodingKeys: String, CodingKey {
+        case message, context
+        case searchFor = "search_for"
+    }
 }

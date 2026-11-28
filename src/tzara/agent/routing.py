@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import re
 import uuid
 from collections.abc import Callable
@@ -9,10 +10,12 @@ from typing import Any, ClassVar
 
 from langchain.agents.middleware import AgentMiddleware
 from langchain.agents.middleware.types import ModelRequest, ModelResponse
-from langchain_core.messages import AIMessage
+from langchain_core.messages import AIMessage, HumanMessage
 
 from tzara.agent.screen import ScreenBlock
 from tzara.config import ResearchSettings
+
+logger = logging.getLogger(__name__)
 
 
 class QuestionRules:
@@ -36,16 +39,32 @@ class QuestionRules:
         self._words = settings.question_words
         self._chat = [re.compile(pattern, re.IGNORECASE) for pattern in settings.chat_patterns]
 
+    GREETING: ClassVar[re.Pattern[str]] = re.compile(
+        r"^\s*(?:(?:hi|hello|hey|yo|ok|okay|so|well|please|there)\b[\s,!.:-]*)+", re.IGNORECASE
+    )
+    CONTRACTIONS: ClassVar[dict[str, str]] = {
+        "whats": "what",
+        "whos": "who",
+        "wheres": "where",
+        "hows": "how",
+        "whens": "when",
+        "whys": "why",
+    }
+
     def needs_sources(self, message: str) -> bool:
-        """Whether ``message`` should be answered from web pages."""
-        text = message.strip().lower()
+        """Whether ``message`` should be answered from web pages.
+
+        A greeting in front ("hey, whats the weather") is not part of the question, and
+        "what's" is "what".
+        """
+        text = self.GREETING.sub("", message.strip().lower().replace("\u2019", "'"))
         if not text or any(pattern.search(text) for pattern in self._chat):
             return False
-        words = text.split()
+        bare = text.replace("'", "")
+        words = bare.split()
+        first = self.CONTRACTIONS.get(words[0].strip(",.!?:"), words[0].strip(",.!?:"))
         return (
-            "?" in text
-            or words[0] in self._starts
-            or any(word in f" {text} " for word in self._words)
+            "?" in text or first in self._starts or any(word in f" {bare} " for word in self._words)
         )
 
 
@@ -67,6 +86,7 @@ class ResearchRouter(AgentMiddleware):
         tool: str = "research",
         report: Callable[[str], None] | None = None,
         writing: str = "",
+        route: Callable[[], Any] | None = None,
     ) -> None:
         """Create the router.
 
@@ -75,8 +95,12 @@ class ResearchRouter(AgentMiddleware):
             tool: The tool that answers such messages.
             report: Told what is happening, so the wait for the answer is not a bare spinner.
             writing: Said while the model writes the answer from the evidence.
+            route: Says what to do with this turn's message, if it was decided already:
+                ``"skip"`` to answer without the web, or ``("search", question)`` to search for
+                ``question``. ``None`` leaves it to the rules.
         """
         super().__init__()
+        self._route = route or (lambda: None)
         self._rules = rules
         self._tool = tool
         self._report = report or (lambda _text: None)
@@ -93,15 +117,22 @@ class ResearchRouter(AgentMiddleware):
         # may still call research itself if it needs to. The app and window alone change nothing:
         # the rules look at what the user wrote.
         written = ScreenBlock.remove(last.text) if last is not None else ""
-        if (
+        decided = self._route() if last is not None and last.type == "human" else None
+        question = None
+        if isinstance(decided, tuple):
+            question = decided[1]
+        elif (
             last is not None
             and last.type == "human"
+            and decided != "skip"
             and not ScreenBlock.brings_text(last.text)
             and self._rules.needs_sources(written)
         ):
+            question = written
+        if question is not None and question.strip():
             call = {
                 "name": self._tool,
-                "args": {"question": written.strip()},
+                "args": {"question": question.strip()},
                 "id": f"{self.ROUTED}{uuid.uuid4().hex}",
             }
             return AIMessage(content="", tool_calls=[call])
@@ -114,3 +145,186 @@ class ResearchRouter(AgentMiddleware):
                 return handler(request.override(tools=[]))
             return response
         return handler(request)
+
+
+class AppRouter(AgentMiddleware):
+    """Searches an app itself first when the message names that app and the app can search.
+
+    A small model asked to "add a paragraph to my Notion page called MCP Test" calls the update
+    tool with no page id, then asks the user for the id. As with research, the first step is
+    made here, in code: the search runs for the name in the message, and the model starts from
+    its result, which holds the id. Only the first model call of a turn is routed.
+    """
+
+    ROUTED: ClassVar[str] = "appsearch-"  # must not contain ResearchRouter.ROUTED
+    SEARCH: ClassVar[re.Pattern[str]] = re.compile(r"(?:^|[-_])search$")
+    TITLE: ClassVar[re.Pattern[str]] = re.compile(
+        r"""\b(?:called|named|titled)\s+(?:["“'](?P<quoted>[^"”']+)["”']"""
+        r"""|(?P<plain>[^"”'.,;\n]+?)(?:\s+(?:page|doc|document|database|and|with|in|on)\b|[.,;\n]|$))""",
+        re.IGNORECASE,
+    )
+    GENERIC: ClassVar[frozenset[str]] = frozenset({"microsoft", "files", "work", "app", "apps"})
+    MIN_WORD: ClassVar[int] = 4
+
+    FETCH: ClassVar[re.Pattern[str]] = re.compile(r"(?:^|[-_])fetch$")
+
+    def __init__(
+        self,
+        searches: dict[str, tuple[str, str]],
+        fetches: dict[str, tuple[str, str]] | None = None,
+        open_page: Callable[[], tuple[str, str] | None] | None = None,
+    ) -> None:
+        """Create the router.
+
+        Args:
+            searches: For each app that can search, its tool's full name and the name of that
+                tool's query argument.
+            fetches: For each app that can read a page, its tool's full name and the name of
+                the argument that takes the page's address.
+            open_page: The app and address of the page the user has open in that app, if this
+                turn's message is about it. That page is read first, here, in code: the page
+                text on the screen is a browser notice, and the model otherwise answered about
+                the page from its own earlier words.
+        """
+        super().__init__()
+        self._fetches = fetches or {}
+        self._open_page = open_page or (lambda: None)
+        self._searches = searches
+        self._words: dict[str, str] = {}
+        for app in searches:
+            for word in [app, *app.split("-")]:
+                if len(word) >= self.MIN_WORD and word.lower() not in self.GENERIC:
+                    self._words.setdefault(word.lower(), app)
+
+    CONTEXT_LINE: ClassVar[re.Pattern[str]] = re.compile(r"^(?:App|Window|Address): (.+)$", re.M)
+
+    def _on_screen(self, word: str, context: str) -> bool:
+        """Whether the screen context shows the app's own page: then the page is known already."""
+        return any(word in line.lower() for line in self.CONTEXT_LINE.findall(context))
+
+    def route(self, text: str, context: str = "") -> dict[str, Any] | None:
+        """The search call to make for ``text``, or ``None`` if none is needed.
+
+        None if the message names no app that can search, or if what the user is looking at is
+        that app's own page: the screen context has its address, so there is nothing to look up.
+
+        Args:
+            text: What the user wrote.
+            context: The screen context block that came with it, if any.
+        """
+        lowered = text.lower()
+        for word, app in self._words.items():
+            if self._on_screen(word, context):
+                continue
+            if re.search(rf"\b{re.escape(word)}\b", lowered):
+                tool, argument = self._searches[app]
+                found = self.TITLE.search(text)
+                query = (
+                    (found.group("quoted") or found.group("plain")).strip()
+                    if found
+                    else text.strip()
+                )
+                return {
+                    "name": tool,
+                    "args": {argument: query},
+                    "id": f"{self.ROUTED}{uuid.uuid4().hex}",
+                }
+        return None
+
+    def wrap_model_call(
+        self,
+        request: ModelRequest[Any],
+        handler: Callable[[ModelRequest[Any]], ModelResponse[Any]],
+    ) -> Any:
+        """Make the search for the user's message if it names an app, else carry on."""
+        last = request.messages[-1] if request.messages else None
+        if last is not None and last.type == "human":
+            page = self._open_page()
+            if page is not None and page[0] in self._fetches:
+                tool, argument = self._fetches[page[0]]
+                logger.info("the open page of %s is read first with %s", page[0], tool)
+                read = {
+                    "name": tool,
+                    "args": {argument: page[1]},
+                    "id": f"{self.ROUTED}{uuid.uuid4().hex}",
+                }
+                return AIMessage(content="", tool_calls=[read])
+            call = self.route(ScreenBlock.remove(last.text), last.text)
+            if call is not None:
+                logger.info("the message names an app: searching it first with %s", call["name"])
+                return AIMessage(content="", tool_calls=[call])
+        return handler(request)
+
+
+class EmptyReplyRetry(AgentMiddleware):
+    """Asks the model once more when it returns nothing: no words and no tool call.
+
+    qwen3:8b sometimes does, after reading a long tool result, and the user was left with no
+    reply at all. Asked again, it nearly always answers. Nothing was shown by the empty call.
+    """
+
+    def wrap_model_call(
+        self,
+        request: ModelRequest[Any],
+        handler: Callable[[ModelRequest[Any]], ModelResponse[Any]],
+    ) -> Any:
+        """Call the model; call it once more if the answer was empty."""
+        response = handler(request)
+        if self._empty(response):
+            logger.info("the model returned nothing; asking it once more")
+            response = handler(request)
+        return response
+
+    @staticmethod
+    def _empty(response: Any) -> bool:
+        messages = [m for m in getattr(response, "result", []) if isinstance(m, AIMessage)]
+        return bool(messages) and all(not m.text.strip() and not m.tool_calls for m in messages)
+
+
+class PromiseRetry(AgentMiddleware):
+    """Asks the model once more when it ends its turn by promising a step it did not take.
+
+    qwen3:8b answered "I see the issue. Let me fetch the current page text. One moment please."
+    and stopped: no tool ran, and the user waited for nothing. Decided from the words of the
+    reply and the lack of a tool call (no side model request); the model is asked again with
+    a reminder to call the tool. Once only, and only if it promised.
+    """
+
+    def __init__(self, pattern: str, reminder: str) -> None:
+        """Create the check.
+
+        Args:
+            pattern: A regular expression for a reply that only promises a step.
+            reminder: What the model is told when it did.
+        """
+        super().__init__()
+        self._pattern = re.compile(pattern, re.IGNORECASE | re.DOTALL)
+        self._reminder = reminder
+
+    def wrap_model_call(
+        self,
+        request: ModelRequest[Any],
+        handler: Callable[[ModelRequest[Any]], ModelResponse[Any]],
+    ) -> Any:
+        """Call the model; if it only promised a step, call it again with a reminder."""
+        response = handler(request)
+        if self._promised(response):
+            logger.info("the model promised a step without taking it; asking it to do it")
+            promise = [m for m in response.result if isinstance(m, AIMessage)]
+            again = request.override(
+                messages=[*request.messages, *promise, HumanMessage(self._reminder)]
+            )
+            retried = handler(again)
+            if any(
+                getattr(m, "tool_calls", None) for m in retried.result if isinstance(m, AIMessage)
+            ):
+                return retried
+        return response
+
+    def _promised(self, response: Any) -> bool:
+        messages = [m for m in getattr(response, "result", []) if isinstance(m, AIMessage)]
+        return (
+            bool(messages)
+            and not any(m.tool_calls for m in messages)
+            and any(self._pattern.search(m.text) for m in messages)
+        )

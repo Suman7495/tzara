@@ -172,7 +172,7 @@ class TestFullSetup:
         setup = Setup()
         setup.installer.setup(SetupOptions())
         assert (
-            "Control+Option" in setup.text
+            "Right Option" in setup.text
             and "Input Monitoring" in setup.text
             and "tzara" in setup.text
         )
@@ -180,7 +180,7 @@ class TestFullSetup:
     def test_the_hotkey_hint_is_left_out_when_the_app_was_not_installed(self):
         setup = Setup()
         setup.installer.setup(SetupOptions(app=False))
-        assert "Control+Option" not in setup.text
+        assert "Right Option" not in setup.text
         assert "chat in the terminal" in setup.text
 
 
@@ -297,7 +297,7 @@ class TestAnAppThatIsNotPublishedYet:
         setup = Setup(apps={"fail": AppNotPublished("no build")})
         setup.installer.setup(SetupOptions(open_at_login=True))
         assert "app.open" not in setup.log and "app_job.install" not in setup.log
-        assert "Control+Option" not in setup.text
+        assert "Right Option" not in setup.text
 
     def test_the_server_was_still_set_up(self):
         setup = Setup(apps={"fail": AppNotPublished("no build")})

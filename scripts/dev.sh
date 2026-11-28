@@ -7,7 +7,7 @@
 #   - opens the dev app against it, in the foreground; quit it (menu-bar icon) or press Ctrl+C
 #   - on the way out, stops the dev server and brings the installed app back if it was running
 #
-# The installed app is quit while this runs, because both would answer Control+Option.
+# The installed app is quit while this runs, because both would answer the Right Option key.
 # Extra arguments go to the app, e.g. `scripts/dev.sh --snapshot /tmp/box.png`.
 # Needs the project's environment: `conda activate tzara && make install` (once).
 # Settings: TZARA_DEV_DIR (data folder), TZARA_DEV_PORT, DEV_KEEP_INSTALLED=1 (do not quit the

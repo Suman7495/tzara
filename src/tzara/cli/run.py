@@ -16,6 +16,7 @@ from tzara.agent import Tzara
 from tzara.agent.memory import ConversationMemory
 from tzara.cli.commands import BuiltinCommands, CommandRegistry, ExitRequested
 from tzara.config import TzaraConfig
+from tzara.mcp import McpHub
 from tzara.memory import PersonalMemory
 
 logger = logging.getLogger(__name__)
@@ -38,6 +39,7 @@ class TzaraCLI:
         *,
         log_path: Path | None = None,
         personal: PersonalMemory | None = None,
+        mcp: McpHub | None = None,
     ) -> None:
         """Create the CLI.
 
@@ -50,6 +52,7 @@ class TzaraCLI:
                 so it survives ``/set-model``. Defaults to a new, empty one.
             log_path: Log file, mentioned in error messages. ``None`` if
                 logging to a file is unavailable.
+            mcp: The connected apps, started before the first agent and handed to every one.
             personal: What is remembered about the user, handed to every agent. ``None``
                 means nothing is kept.
         """
@@ -59,6 +62,7 @@ class TzaraCLI:
         self._memory = memory or ConversationMemory()
         self._log_path = log_path
         self._personal = personal
+        self._mcp = mcp
         self._agent: Tzara | None = None
         self._registry = CommandRegistry(self._console)
         BuiltinCommands(self._registry, self._console, self, self._config.cli)
@@ -86,7 +90,11 @@ class TzaraCLI:
         cli = self._config.cli
         try:
             candidate = self._agent_factory(
-                model=model, config=self._config, memory=self._memory, personal=self._personal
+                model=model,
+                config=self._config,
+                memory=self._memory,
+                personal=self._personal,
+                mcp=self._mcp,
             )
             self._warm_up(candidate, cli.switching_status)
         except KeyboardInterrupt:
@@ -122,6 +130,26 @@ class TzaraCLI:
             self._console.print(f"  - {fact.text}", markup=False)
         self._console.print()
 
+    def show_apps(self) -> None:
+        """Print the apps connected through MCP and what Tzara can use of each."""
+        cli = self._config.cli
+        if not self._config.mcp.enabled:
+            self._console.print(cli.mcp_off, markup=False)
+            return
+        statuses = self._mcp.status() if self._mcp is not None else []
+        if not statuses:
+            self._console.print(cli.mcp_empty.format(file=self._config.mcp.file_name), markup=False)
+            return
+        self._console.print("\n" + cli.mcp_header, markup=False)
+        for status in statuses:
+            state = "connected" if status.connected else f"not connected ({status.error})"
+            self._console.print(f"  {status.name}: {state}", markup=False)
+            for tool in status.offered:
+                self._console.print(f"    + {tool}", markup=False)
+            for tool, reason in status.hidden:
+                self._console.print(f"    - {tool}: {reason}", markup=False)
+        self._console.print()
+
     def erase_memory(self) -> None:
         """Forget every fact and every stored conversation, and this conversation too."""
         self._memory.reset()
@@ -147,6 +175,7 @@ class TzaraCLI:
                 config=self._config,
                 memory=self._memory,
                 personal=self._personal,
+                mcp=self._mcp,
             )
         except Exception as error:
             self._report_error("Error", error)

@@ -7,7 +7,7 @@ import TzaraCore
 /// application, so whatever you were doing keeps its focus and, importantly, its full-screen
 /// Space. Joining all Spaces and being a "full-screen auxiliary" window is what lets it float
 /// over a full-screen app.
-final class ChatBoxPanel: NSPanel {
+class BarPanel: NSPanel {
     /// Called when the user presses Escape with no text field handling it.
     var onCancel: (() -> Void)?
 

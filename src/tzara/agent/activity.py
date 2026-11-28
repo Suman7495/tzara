@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import logging
 import os
+import time
 from collections.abc import Callable
 from typing import Any
 from urllib.parse import urlparse
@@ -10,9 +12,13 @@ from uuid import UUID
 
 from langchain_core.callbacks import BaseCallbackHandler
 
+from tzara.agent.actions import ActionRecord
 from tzara.agent.events import Progress, ToolCompleted, ToolStarted
 from tzara.agent.links import TrustedLinks
+from tzara.mcp.tools import McpTool
 from tzara.prompts import Prompts
+
+logger = logging.getLogger(__name__)
 
 
 class SafeFields(dict[str, str]):
@@ -36,6 +42,10 @@ class Activity(BaseCallbackHandler):
     """
 
     MAX_FIELD_CHARS = 60
+    TARGET_ARGUMENTS = ("page_id", "id", "url", "path", "name", "title", "query", "question")
+    MAX_LOGGED_VALUE = 80
+    WORDS_OF_THE_USER = frozenset({"query", "question", "title", "text", "content", "message"})
+    MAX_LOGGED_ERROR = 300
     WEB_TOOLS = frozenset({"web_search", "read_webpage", "research"})
 
     def __init__(self, prompts: Prompts) -> None:
@@ -47,7 +57,10 @@ class Activity(BaseCallbackHandler):
         self._prompts = prompts
         self._listener: Callable[[ToolStarted | ToolCompleted | Progress], None] | None = None
         self._running: dict[UUID, str] = {}
+        self._begun: dict[UUID, tuple[float, str]] = {}
+        self.actions: list[ActionRecord] = []
         self._read_the_web = False
+        self.tools_run: set[str] = set()
         self.links = TrustedLinks()
 
     @property
@@ -68,6 +81,9 @@ class Activity(BaseCallbackHandler):
     def begin_turn(self) -> None:
         """Forget what the last reply did: a new reply starts with nothing read or seen."""
         self._read_the_web = False
+        self.tools_run.clear()
+        self.actions.clear()
+        self._begun.clear()
         self._running.clear()
         self.links.clear()
 
@@ -89,7 +105,11 @@ class Activity(BaseCallbackHandler):
 
     def describe(self, tool: str, arguments: dict[str, Any]) -> str:
         """Return the sentence for starting ``tool`` with ``arguments``."""
-        template = self._prompts.tool_activity.get(tool, self._prompts.default_activity)
+        known = self._prompts.tool_activity.get(tool)
+        if known is None and McpTool.SEPARATOR in tool:
+            server, _, name = tool.partition(McpTool.SEPARATOR)
+            return self._prompts.mcp_activity.format(server=server, tool=name.replace("_", " "))
+        template = known or self._prompts.default_activity
         return template.format_map(self.fields(arguments))
 
     def fields(self, arguments: dict[str, Any]) -> SafeFields:
@@ -112,21 +132,107 @@ class Activity(BaseCallbackHandler):
         inputs = kwargs.get("inputs")
         arguments = inputs if isinstance(inputs, dict) else {}
         name = str((serialized or {}).get("name") or kwargs.get("name") or "")
-        if name in self.WEB_TOOLS:
+        # What a web page or a connected app returns is data from outside, which may hold
+        # instructions: nothing is remembered on its say.
+        if name in self.WEB_TOOLS or McpTool.SEPARATOR in name:
             self._read_the_web = True
+        self.tools_run.add(name)
         run_id = kwargs.get("run_id")
         if isinstance(run_id, UUID):
             self._running[run_id] = name
+            self._begun[run_id] = (time.monotonic(), self._target(arguments))
+        logger.info("tool started: %s %s", name, self._described(arguments))
         self._emit(ToolStarted(name, self.describe(name, arguments)))
 
     def on_tool_end(self, output: Any, **kwargs: Any) -> None:
         """Announce that a tool has finished, and note the web addresses it returned."""
-        self.links.collect(str(getattr(output, "content", output)))
+        text = str(getattr(output, "content", output))
+        self.links.collect(text)
+        failed = text.startswith("Error")
+        name = self._finished_note(
+            kwargs.get("run_id"), "failed: " + text[:100] if failed else "ok"
+        )
+        logger.info(
+            "tool finished: %s %s, %d characters back%s",
+            name,
+            "with an error" if failed else "ok",
+            len(text),
+            f": {self._short_error(text)}" if failed else "",
+        )
+        logger.debug("tool result of %s: %s", name, text[:1000])
         self._emit(ToolCompleted(self._finished(kwargs.get("run_id"))))
+
+    def on_llm_end(self, response: Any, **_kwargs: Any) -> None:
+        """Log how long the model took to read the prompt and to write: where a slow reply went."""
+        try:
+            message = response.generations[0][0].message
+            info = message.response_metadata
+        except (AttributeError, IndexError, TypeError):
+            return
+        if not str(message.content).strip() and not message.tool_calls:
+            logger.warning(
+                "the model returned nothing to show: invalid tool calls %s",
+                [
+                    (call.get("name"), str(call.get("error"))[:120])
+                    for call in message.invalid_tool_calls
+                ],
+            )
+        if message.tool_calls:
+            logger.info(
+                "the model asked for: %s", [call.get("name") for call in message.tool_calls]
+            )
+        if "prompt_eval_count" not in info:
+            return
+        logger.info(
+            "model call: read %d tokens in %.1fs, wrote %d tokens in %.1fs",
+            info.get("prompt_eval_count", 0),
+            info.get("prompt_eval_duration", 0) / 1e9,
+            info.get("eval_count", 0),
+            info.get("eval_duration", 0) / 1e9,
+        )
 
     def on_tool_error(self, error: BaseException, **kwargs: Any) -> None:
         """Announce that a tool has failed."""
+        name = self._finished_note(kwargs.get("run_id"), f"failed: {error}"[:100])
+        logger.warning("tool failed: %s: %s", name, str(error)[: self.MAX_LOGGED_ERROR])
         self._emit(ToolCompleted(self._finished(kwargs.get("run_id")), failed=True))
+
+    def _finished_note(self, run_id: object, result: str) -> str:
+        """Record how a tool ended (for the reply's action note and the log); return its name."""
+        if not isinstance(run_id, UUID):
+            return ""
+        name = self._running.get(run_id, "")
+        began, target = self._begun.pop(run_id, (time.monotonic(), ""))
+        if name:
+            self.actions.append(ActionRecord(name, target, result))
+            logger.info("tool took %.1fs: %s", time.monotonic() - began, name)
+        return name
+
+    def _target(self, arguments: dict[str, Any]) -> str:
+        """What a tool call is about, short: its page, address, file or search."""
+        for key in self.TARGET_ARGUMENTS:
+            if arguments.get(key):
+                return self._short(str(arguments[key]))
+        return ""
+
+    def _described(self, arguments: dict[str, Any]) -> str:
+        """The arguments for the log: short values as they are, long text only by its length.
+
+        Message and page text are not logged at the default level, so a long value (a paragraph
+        the model wrote) is shown by its size.
+        """
+        parts = []
+        for key, value in arguments.items():
+            text = str(value)
+            parts.append(
+                f"{key}={' '.join(text.split())}"
+                if len(text) <= self.MAX_LOGGED_VALUE and key not in self.WORDS_OF_THE_USER
+                else f"{key}=<{len(text)} characters>"
+            )
+        return ", ".join(parts) or "(no arguments)"
+
+    def _short_error(self, text: str) -> str:
+        return " ".join(text.split())[: self.MAX_LOGGED_ERROR]
 
     def _finished(self, run_id: object) -> str:
         """The name of the tool whose run ended, or empty if it was not noticed starting."""

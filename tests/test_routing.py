@@ -28,6 +28,12 @@ class TestRules:
             "Is it safe to take ibuprofen with coffee?",
             "competitors of telekinesis.ai",
             "is it safe to take ibuprofen with coffee",
+            "hey, whats the weather like in darmstadt",
+            "darmstadt weather",
+            "weather in berlin today",
+            "what's the capital of France",
+            "who's the president of Brazil",
+            "how much is a flight to Rome",
         ],
     )
     def test_questions_for_facts_need_sources(self, message):
@@ -129,3 +135,27 @@ class TestRouter:
     def test_a_tool_result_the_model_asked_for_keeps_its_tools(self):
         reply, said = self.route(ToolMessage(content="x", tool_call_id="call-1"))
         assert reply.tools == ["research"] and said == []
+
+
+class TestDecidedBeforehand:
+    def route(self, message, decided):
+        router = ResearchRouter(RULES, route=lambda: decided)
+
+        def handler(request):
+            return SimpleNamespace(result=[AIMessage(content="model")])
+
+        request = Request(messages=[HumanMessage(content=message)], tools=["research"])
+        return router.wrap_model_call(cast(Any, request), cast(Any, handler))
+
+    def test_skip_answers_without_the_web_even_for_a_question(self):
+        reply = self.route("what is the capital of Australia?", "skip")
+        assert reply.result[0].text == "model"
+
+    def test_search_searches_for_the_question_given_whatever_the_message_says(self):
+        reply = self.route("Search online.", ("search", "what is the capital of Australia"))
+        (call,) = reply.tool_calls
+        assert call["args"] == {"question": "what is the capital of Australia"}
+
+    def test_nothing_decided_leaves_it_to_the_rules(self):
+        assert self.route("who won the match on Sunday?", None).tool_calls
+        assert self.route("hi", None).result[0].text == "model"

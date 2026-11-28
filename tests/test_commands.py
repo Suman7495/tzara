@@ -13,6 +13,7 @@ class FakeController:
         self.new_conversations = 0
         self.shown_memory = 0
         self.erased_memory = 0
+        self.shown_apps = 0
 
     def switch_model(self, model: str) -> None:
         self.switched_to.append(model)
@@ -22,6 +23,9 @@ class FakeController:
 
     def show_memory(self) -> None:
         self.shown_memory += 1
+
+    def show_apps(self) -> None:
+        self.shown_apps += 1
 
     def erase_memory(self) -> None:
         self.erased_memory += 1
@@ -125,6 +129,11 @@ class TestBuiltinCommands:
         registry, controller, _ = setup
         registry.execute("/new")
         assert controller.new_conversations == 1
+
+    def test_apps_shows_the_connected_apps(self, setup):
+        registry, controller, _ = setup
+        registry.execute("/apps")
+        assert controller.shown_apps == 1
 
     def test_memory_shows_what_is_remembered(self, setup):
         registry, controller, _ = setup

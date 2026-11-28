@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from collections.abc import Callable
 from typing import Any
 
@@ -10,7 +11,7 @@ from langchain.agents.middleware.types import ModelRequest, ModelResponse
 from langchain_core.messages import SystemMessage
 
 from tzara.config import MemorySettings
-from tzara.memory import FactStore
+from tzara.memory import ActivityLog, FactStore
 from tzara.prompts import Prompts
 
 
@@ -28,6 +29,7 @@ class MemoryMiddleware(AgentMiddleware):
         facts: FactStore,
         settings: MemorySettings,
         prompts: Prompts,
+        activity: ActivityLog | None = None,
     ) -> None:
         """Create the middleware.
 
@@ -35,8 +37,10 @@ class MemoryMiddleware(AgentMiddleware):
             facts: Where facts are kept.
             settings: How many facts and how many characters to add.
             prompts: Where the wording around the facts comes from.
+            activity: What Tzara did lately, told to the model too. ``None``: not told.
         """
         super().__init__()
+        self._activity = activity
         self._facts = facts
         self._settings = settings
         self._prompts = prompts
@@ -56,7 +60,18 @@ class MemoryMiddleware(AgentMiddleware):
                 break
             lines.append(f"- {fact.text}")
             used += len(fact.text)
-        return self._prompts.memory_block.format(facts="\n".join(lines)) if lines else ""
+        text = self._prompts.memory_block.format(facts="\n".join(lines)) if lines else ""
+        return text + self._activity_block()
+
+    def _activity_block(self) -> str:
+        """What was done lately, one line each, with the time it was done (a fixed text)."""
+        if self._activity is None:
+            return ""
+        lines = [
+            f"- {time.strftime('%b %d %H:%M', time.localtime(item.at))}: {item.summary}"
+            for item in self._activity.recent()
+        ]
+        return self._prompts.activity_block.format(lines="\n".join(lines)) if lines else ""
 
     def wrap_model_call(
         self,

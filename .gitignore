@@ -216,3 +216,28 @@ __marimo__/
 app/.build/
 app/build/
 .swiftpm/
+
+# Secrets and personal data: never committed. Tzara keeps these in the user's data folder, outside the
+# repository, but a copy made for testing or debugging must still never be added by accident.
+.env.*
+!.env.example
+*.p12
+*.pfx
+*.pem
+*.key
+*.p8
+*.cer
+*.mobileprovision
+*.base64
+token
+server.json
+keys.json
+mcp.json
+mcp-auth.json
+name.json
+memory.db
+memory.db-*
+*.db
+*.db-shm
+*.db-wal
+.claude/

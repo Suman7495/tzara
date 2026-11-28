@@ -1,3 +1,4 @@
+import Combine
 import Foundation
 import TzaraCore
 
@@ -8,8 +9,12 @@ final class SettingsModel: ObservableObject {
     @Published private(set) var providers: [ModelProvider] = []
     @Published private(set) var currentModel = ""
     @Published private(set) var serverState = ""
-    /// What is typed in the "other model" field.
-    @Published var customModel = ""
+    /// The model the user picked that still needs setting up (a download or a key).
+    @Published private(set) var needsSetup: ModelChoice?
+    /// The API key being typed for that model.
+    @Published var keyDraft = ""
+    /// How far the downloads have got.
+    @Published private(set) var downloads: [ModelDownload] = []
     /// The model being loaded right now, if a switch is in progress.
     @Published private(set) var switchingTo: String?
     /// The outcome of the last switch: what went wrong, or what is now in use.
@@ -25,6 +30,23 @@ final class SettingsModel: ObservableObject {
         didSet { preferences.autoUpdate = autoUpdate }
     }
 
+    /// Whether tapping the write key makes Tzara write in the field of the app in front, and which key.
+    @Published var writeInOtherApps: Bool {
+        didSet {
+            writePreferences.enabled = writeInOtherApps
+            NotificationCenter.default.post(name: .writeSettingsChanged, object: nil)
+        }
+    }
+
+    @Published var writeKey: WriteKey {
+        didSet {
+            writePreferences.key = writeKey
+            NotificationCenter.default.post(name: .writeSettingsChanged, object: nil)
+        }
+    }
+
+    private let writePreferences = WritePreferences()
+
     /// Whether Tzara may look at the app in front when the box opens. Changing it is saved at once;
     /// turning it on asks macOS for the Accessibility permission.
     @Published var useScreen: Bool {
@@ -35,9 +57,6 @@ final class SettingsModel: ObservableObject {
         }
     }
     /// The language the Translate button translates into; empty means the language of the Mac.
-    @Published var translateInto: String {
-        didSet { screenPreferences.translateInto = translateInto }
-    }
     /// Whether macOS has given the permission that lets Tzara read selected text and window titles.
     @Published private(set) var screenAllowed = ScreenReader.isAllowed
 
@@ -50,6 +69,12 @@ final class SettingsModel: ObservableObject {
 
     /// Set once the user has confirmed the uninstall; the app disappears a few seconds later.
     @Published private(set) var isUninstalling = false
+
+    /// The apps Tzara is connected to through MCP.
+    let apps: AppsModel
+    /// Passes the apps' changes on: SwiftUI only watches this object, not the one inside it, so
+    /// without this the list would not redraw when an app is added, removed or signed in to.
+    private var appsChanges: AnyCancellable?
 
     private let client: ChatClient
     private let updater: Updater
@@ -70,26 +95,25 @@ final class SettingsModel: ObservableObject {
             Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "")
     ) {
         self.client = client
+        apps = AppsModel(client: client)
         self.updater = updater
         self.uninstaller = uninstaller
         self.preferences = preferences
         autoUpdate = preferences.autoUpdate
         self.screenPreferences = screenPreferences
         useScreen = screenPreferences.enabled
-        translateInto = screenPreferences.translateInto
+        writeInOtherApps = writePreferences.enabled
+        writeKey = writePreferences.key
         self.currentVersion = currentVersion ?? AppVersion("0")!
+        appsChanges = apps.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }
     }
 
-    /// Looks again at whether macOS has given the permission, which the user may just have done.
-    func refreshScreenPermission() { screenAllowed = ScreenReader.isAllowed }
+    /// Looks again at whether macOS has given the permissions, which the user may just have done.
+    func refreshScreenPermission() {
+        screenAllowed = ScreenReader.isAllowed
+    }
 
     var isSwitching: Bool { switchingTo != nil }
-
-    /// The explanation of the model being used or loaded, if it is a listed one.
-    var currentDescription: String? {
-        let target = switchingTo ?? currentModel
-        return providers.lazy.flatMap(\.models).first { $0.id == target }?.description
-    }
 
     /// The model in use if it is not one of the listed ones (it was typed in by hand), so the
     /// dropdown still has something valid to show.
@@ -101,14 +125,17 @@ final class SettingsModel: ObservableObject {
 
     /// Fetches the model list and the current model. Called when the settings screen opens.
     func load() {
+        loadMemory()
+        apps.load()
         Task {
             do {
-                providers = try await client.models()
+                let overview = try await client.modelOverview()
+                providers = overview.providers
+                downloads = overview.downloads
                 let status = try await client.status()
                 currentModel = status.model
                 serverState = status.state
                 FileLog.shared.info("settings: \(providers.count) providers, model \(status.model)")
-                loadMemory()
             } catch {
                 message = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
             }
@@ -142,6 +169,11 @@ final class SettingsModel: ObservableObject {
 
     /// Makes Tzara forget everything it knows and every conversation it has stored. Call this
     /// only after the user has confirmed.
+    /// Everything said in a stored conversation, to read it.
+    func conversation(_ id: Int) async -> [StoredLine] {
+        (try? await client.memoryConversation(id)) ?? []
+    }
+
     func eraseMemory() {
         Task {
             do {
@@ -159,8 +191,18 @@ final class SettingsModel: ObservableObject {
         (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
     }
 
+    /// Picks a model. One that is ready is loaded; one that is not shows what it needs.
     func choose(_ model: String) {
-        guard !isSwitching, model != currentModel else { return }
+        guard !isSwitching else { return }
+        let choice = providers.lazy.flatMap(\.models).first { $0.id == model }
+        if let choice, choice.need != .ready {
+            needsSetup = choice
+            keyDraft = ""
+            message = nil
+            return
+        }
+        needsSetup = nil
+        guard model != currentModel else { return }
         switchingTo = model
         message = nil
         Task {
@@ -168,16 +210,81 @@ final class SettingsModel: ObservableObject {
                 currentModel = try await client.setModel(model)
                 message = "Now using \(currentModel)."
             } catch {
-                message = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+                message = Self.describe(error)
             }
             switchingTo = nil
         }
     }
 
-    func chooseCustom() {
-        let model = customModel.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !model.isEmpty else { return }
-        choose(model)
+    /// The download of the model that needs setting up, if one is under way or has failed.
+    var activeDownload: ModelDownload? {
+        guard let model = needsSetup?.id else { return nil }
+        return downloads.last { $0.model == model }
+    }
+
+    /// Downloads the model that was picked, then switches to it.
+    func downloadPicked() {
+        guard let choice = needsSetup, choice.need == .download else { return }
+        Task {
+            do {
+                try await client.downloadModel(choice.id)
+                await watchDownload(choice.id)
+            } catch {
+                message = Self.describe(error)
+            }
+        }
+    }
+
+    private func watchDownload(_ model: String) async {
+        while !Task.isCancelled {
+            if let overview = try? await client.modelOverview() {
+                providers = overview.providers
+                downloads = overview.downloads
+                if let download = downloads.last(where: { $0.model == model }), download.finished {
+                    if download.error == nil { choose(model) }
+                    return
+                }
+            }
+            try? await Task.sleep(nanoseconds: 1_000_000_000)
+        }
+    }
+
+    /// Saves the API key typed for the model that was picked, then switches to it.
+    func saveKeyForPicked() {
+        guard let choice = needsSetup, choice.need == .key else { return }
+        let key = keyDraft
+        Task {
+            do {
+                try await client.saveKey(provider: choice.provider, key: key)
+                keyDraft = ""
+                let overview = try await client.modelOverview()
+                providers = overview.providers
+                choose(choice.id)
+            } catch {
+                message = Self.describe(error)
+            }
+        }
+    }
+
+    /// Where the user gets a key for a provider.
+    static func keyPage(for provider: String) -> URL? {
+        switch provider {
+        case "anthropic": return URL(string: "https://console.anthropic.com/settings/keys")
+        case "openai": return URL(string: "https://platform.openai.com/api-keys")
+        case "google_genai": return URL(string: "https://aistudio.google.com/apikey")
+        default: return nil
+        }
+    }
+
+    /// A short name for a provider, for people.
+    static func providerTitle(_ provider: String) -> String {
+        switch provider {
+        case "ollama": return "On this Mac (Ollama)"
+        case "anthropic": return "Anthropic (Claude)"
+        case "openai": return "OpenAI"
+        case "google_genai": return "Google (Gemini)"
+        default: return provider
+        }
     }
 
     /// Looks for the latest release and, if it is newer than this app, installs it.

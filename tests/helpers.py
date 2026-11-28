@@ -90,6 +90,7 @@ class FakeAgent:
         config: Any = None,
         memory: Any = None,
         personal: Any = None,
+        mcp: Any = None,
     ) -> None:
         create_error = type(self).create_error
         if create_error is not None:
@@ -101,6 +102,7 @@ class FakeAgent:
         self.events: list[str] = []
         self.messages: list[str] = []
         self.contexts: list[Any] = []
+        self.searches: list[str | None] = []
         type(self).created.append(self)
 
     @classmethod
@@ -157,6 +159,8 @@ class StreamingFakeAgent:
     conversation: ClassVar[list[Any]] = []
     follow_ups: ClassVar[list[str]] = ["Tell me more", "Why?"]
     statuses: ClassVar[list[str]] = []
+    writes: ClassVar[list[Any]] = []
+    resumed: ClassVar[int] = 0
 
     def __init__(
         self,
@@ -164,6 +168,7 @@ class StreamingFakeAgent:
         config: Any = None,
         memory: Any = None,
         personal: Any = None,
+        mcp: Any = None,
     ) -> None:
         create_error = type(self).create_error
         if create_error is not None:
@@ -175,6 +180,7 @@ class StreamingFakeAgent:
         self.events: list[str] = []
         self.messages: list[str] = []
         self.contexts: list[Any] = []
+        self.searches: list[str | None] = []
         self.cancelled = threading.Event()
         type(self).created.append(self)
 
@@ -196,6 +202,17 @@ class StreamingFakeAgent:
     def history(self) -> list[Any]:
         return list(type(self).conversation)
 
+    def write(self, request: Any) -> Any:
+        """Write a fixed text, recording the request."""
+        from tzara.agent.writer import WriteResult
+
+        type(self).writes.append(request)
+        return WriteResult("Sounds good!", "reply", "chat", "nothing")
+
+    def resume_history(self) -> None:
+        """Note that a conversation was put back."""
+        type(self).resumed += 1
+
     def suggest(self) -> list[str]:
         self.events.append("suggest")
         return list(type(self).follow_ups)
@@ -209,9 +226,12 @@ class StreamingFakeAgent:
         if error is not None:
             raise error
 
-    def run(self, text: str, context: Any = None) -> Iterator[AgentEvent]:
+    def run(
+        self, text: str, context: Any = None, search_for: str | None = None
+    ) -> Iterator[AgentEvent]:
         """Typed events, as the real agent gives them: tools first, then the reply."""
         self.contexts.append(context)
+        self.searches.append(search_for)
         characters = 0
         for status in type(self).statuses:
             yield ToolStarted("fake_tool", status)

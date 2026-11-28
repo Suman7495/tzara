@@ -23,7 +23,7 @@ class MemoryDatabase:
 
     FILE_MODE: ClassVar[int] = 0o600
     DIRECTORY_MODE: ClassVar[int] = 0o700
-    VERSION: ClassVar[int] = 2
+    VERSION: ClassVar[int] = 3
     BUSY_TIMEOUT_MS: ClassVar[int] = 5000
     SCHEMA: ClassVar[str] = """
         CREATE TABLE IF NOT EXISTS conversations (
@@ -57,8 +57,22 @@ class MemoryDatabase:
             text TEXT NOT NULL,
             key TEXT NOT NULL UNIQUE,
             created_at REAL NOT NULL,
-            updated_at REAL NOT NULL
+            updated_at REAL NOT NULL,
+            slot TEXT NOT NULL DEFAULT ''
         );
+        CREATE TABLE IF NOT EXISTS activity (
+            id INTEGER PRIMARY KEY,
+            at REAL NOT NULL,
+            kind TEXT NOT NULL,
+            summary TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS samples (
+            id INTEGER PRIMARY KEY,
+            at REAL NOT NULL,
+            place TEXT NOT NULL,
+            text TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS samples_by_place ON samples(place, id);
         CREATE VIRTUAL TABLE IF NOT EXISTS facts_fts
             USING fts5(text, content='facts', content_rowid='id');
         CREATE TRIGGER IF NOT EXISTS facts_added AFTER INSERT ON facts BEGIN
@@ -90,8 +104,15 @@ class MemoryDatabase:
             if path is not None:
                 self._connection.execute("PRAGMA journal_mode = WAL")
             self._connection.executescript(self.SCHEMA)
+            self._add_missing_columns()
             self._connection.execute(f"PRAGMA user_version = {self.VERSION}")
             self._connection.commit()
+
+    def _add_missing_columns(self) -> None:
+        """Bring a file made by an older version up to date (version 3 added a slot to facts)."""
+        columns = {row["name"] for row in self._connection.execute("PRAGMA table_info(facts)")}
+        if "slot" not in columns:
+            self._connection.execute("ALTER TABLE facts ADD COLUMN slot TEXT NOT NULL DEFAULT ''")
 
     def execute(self, sql: str, parameters: Sequence[Any] = ()) -> list[sqlite3.Row]:
         """Run one statement, commit it, and return the rows it produced."""

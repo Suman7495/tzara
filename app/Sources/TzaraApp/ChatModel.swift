@@ -2,10 +2,20 @@ import Foundation
 import TzaraCore
 
 struct ChatMessage: Identifiable, Equatable {
-    enum Role: String { case user, assistant }
+    /// `activity` is the box of what the assistant did (its steps); `assistant` is what it said.
+    enum Role: String { case user, assistant, activity }
     let id = UUID()
     let role: Role
     var text: String
+    /// Buttons offered under the message, when it asks a question ("Search online?").
+    var choices: [ChatChoice] = []
+    /// What the assistant has done while working on this reply, so the user can see it is not stuck.
+    var steps: [Step] = []
+
+    struct Step: Equatable {
+        let text: String
+        var done = false
+    }
 
     /// What the message says, ignoring the identity used to draw it.
     var content: String { "\(role.rawValue):\(text)" }
@@ -47,16 +57,15 @@ final class ChatModel: ObservableObject {
     @Published private(set) var screen: ScreenContext?
     /// True when macOS has not allowed Tzara to read selected text, so only the app name came.
     @Published private(set) var screenNeedsPermission = false
-    /// Whether the chip is opened to show more of what is selected.
-    @Published var screenExpanded = false
     private var follow = ScreenFollow()
+    /// Reads what the user is doing right now, when a message is sent: the typed text and the
+    /// window's text are only read then, not once a second. Given what the box shows, and
+    /// returns what to send with the message (`nil` when the user has removed it).
+    var freshContext: ((ScreenContext?) async -> ScreenContext?)?
     @Published private(set) var assistantName = "Tzara"
     @Published private(set) var isRenaming = false
-    @Published var showingSettings = false
     /// Bumped when the text field should take keyboard focus.
     @Published private(set) var focusRequest = 0
-    /// Bumped when the conversation should scroll to its end.
-    @Published private(set) var scrollRequest = 0
 
     let settings: SettingsModel
     private let client: ChatClient
@@ -75,9 +84,7 @@ final class ChatModel: ObservableObject {
 
     /// Called when the box appears.
     func panelDidShow() {
-        showingSettings = false
         focusRequest += 1
-        scrollRequest += 1
         // Opening the box is the moment to get an idle model ready, so it is loaded while the
         // user is still typing.
         Task { await client.wake() }
@@ -105,33 +112,23 @@ final class ChatModel: ObservableObject {
         screenNeedsPermission = needsPermission
     }
 
+    /// Shows an ask with its buttons, for `--demo-choices`, to look at how they sit under a reply.
+    func showDemoChoices() {
+        messages = [
+            ChatMessage(role: .user, text: "what is the capital of Australia"),
+            ChatMessage(
+                role: .assistant,
+                text: "I could not connect that to what is on your screen. Search online? It takes a while.",
+                choices: [
+                    ChatChoice(label: "Search online", message: "Search online.", searchFor: "capital?"),
+                    ChatChoice(label: "No search", message: "No."),
+                ]),
+        ]
+    }
+
     func dropScreen() {
         follow.drop()
         screen = nil
-        screenExpanded = false
-    }
-
-    /// What the one-word buttons work on: what the user has in front of them if there is
-    /// something, else the assistant's last answer. `nil` while there is nothing to work on.
-    var actionTarget: QuickAction.Target? {
-        if screen?.actionable == true { return .screen }
-        guard let last = messages.last, last.role == .assistant, !last.text.isEmpty else { return nil }
-        return .reply
-    }
-
-    /// Which of those it is, in words, shown beside the buttons so it is never a surprise.
-    var actionTargetName: String {
-        switch actionTarget {
-        case .screen: screen?.selection.isEmpty == false ? "the selection" : "this page"
-        case .reply: "the last answer"
-        case nil: ""
-        }
-    }
-
-    /// Sends a one-word action, as if the matching sentence had been typed.
-    func perform(_ action: QuickAction) {
-        guard phase == .idle, !isRenaming, let target = actionTarget else { return }
-        deliver(action.prompt(translateInto: ScreenPreferences().translateInto, on: target))
     }
 
     func send() {
@@ -141,30 +138,58 @@ final class ChatModel: ObservableObject {
         deliver(text)
     }
 
-    private func deliver(_ text: String) {
+    /// Presses one of the buttons under a reply: sends what it says (and, for a search, what to
+    /// search for) as the user's next message. The buttons go, so it cannot be pressed twice.
+    func choose(_ choice: ChatChoice) {
+        guard phase == .idle, !isRenaming else { return }
+        for index in messages.indices { messages[index].choices = [] }
+        deliver(choice.message, searchFor: choice.searchFor)
+    }
+
+    /// A question typed in the dashboard. The screen is not sent with it: the dashboard is not about
+    /// what the user was looking at.
+    func ask(_ text: String) {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard phase == .idle, !isRenaming, !trimmed.isEmpty else { return }
+        deliver(trimmed, useScreen: false)
+    }
+
+    /// The box being written: the activity box (steps) or the answer box, so each stage of the reply
+    /// is its own message instead of one blob.
+    private var writing: (role: ChatMessage.Role, id: UUID)?
+    /// Where this turn's messages begin.
+    private var turnStart = 0
+
+    private func deliver(_ text: String, searchFor: String? = nil, useScreen: Bool = true) {
         notice = nil
         messages.append(ChatMessage(role: .user, text: text))
-        let reply = ChatMessage(role: .assistant, text: "")
-        messages.append(reply)
+        turnStart = messages.count
+        beginActivity()  // "Thinking" until the first step or word arrives
         phase = .waiting
 
         // The context belongs to this one message: later ones are answered from the conversation.
         // What Tzara is aware of goes with every message, and stays in the box afterwards.
-        let context = follow.current
+        let context = useScreen ? follow.current : nil
 
         replyTask = Task {
+            let sent = await freshContext?(context) ?? context
             var waited = 0
             while true {
                 do {
-                    for try await event in client.stream(text, context: context) {
+                    for try await event in client.stream(text, context: sent, searchFor: searchFor) {
                         switch event {
                         case let .status(text):
                             activity = text
+                            addStep(text, toMessage: beginActivity())
                         case let .tool(_, state):
                             toolChanged(state)
+                        case let .choices(options):
+                            if let index = messages.firstIndex(where: { $0.id == beginAnswer() }) {
+                                messages[index].choices = options
+                            }
                         case let .token(piece):
                             activity = nil  // writing the answer means the tools are done
-                            append(piece, toMessage: reply.id)
+                            append(piece, toMessage: beginAnswer())
                             phase = .streaming
                         case let .error(message):
                             notice = message
@@ -183,12 +208,61 @@ final class ChatModel: ObservableObject {
                 }
                 break
             }
-            removeIfEmpty(messageID: reply.id)
-            activity = nil
+            endTurn()
             runningTools = 0
             phase = .idle
             replyTask = nil
             if !Task.isCancelled { onReplyEnded?() }
+            Task {
+                await loadChats()
+                currentChat = (try? await client.conversation())?.id
+            }
+        }
+    }
+
+    /// The activity box of the turn: the one being written, or a new one (after words, or the first).
+    @discardableResult
+    private func beginActivity() -> UUID {
+        if let writing, writing.role == .activity { return writing.id }
+        let box = ChatMessage(role: .activity, text: "")
+        messages.append(box)
+        writing = (.activity, box.id)
+        return box.id
+    }
+
+    /// The answer box of the turn. Words that follow steps start a new one, and a "Thinking" box that
+    /// never got a step goes away.
+    @discardableResult
+    private func beginAnswer() -> UUID {
+        if let writing, writing.role == .assistant { return writing.id }
+        if let writing { closeActivity(writing.id) }
+        let box = ChatMessage(role: .assistant, text: "")
+        messages.append(box)
+        writing = (.assistant, box.id)
+        return box.id
+    }
+
+    /// Finishes the steps of an activity box, or removes it if it has none.
+    private func closeActivity(_ id: UUID) {
+        guard let index = messages.firstIndex(where: { $0.id == id }) else { return }
+        if messages[index].steps.isEmpty {
+            messages.remove(at: index)
+        } else {
+            for step in messages[index].steps.indices { messages[index].steps[step].done = true }
+        }
+    }
+
+    /// The turn is over (answered, stopped or failed): nothing is left spinning, empty boxes go, and a
+    /// turn that did things but said nothing says so instead of simply vanishing.
+    private func endTurn() {
+        if let writing, writing.role == .activity { closeActivity(writing.id) }
+        writing = nil
+        let turn = messages[min(turnStart, messages.count)...]
+        let didThings = turn.contains { $0.role == .activity }
+        messages.removeAll { $0.role == .assistant && $0.text.isEmpty && $0.choices.isEmpty && turn.map(\.id).contains($0.id) }
+        let said = messages[min(turnStart, messages.count)...].contains { $0.role == .assistant }
+        if !said, didThings, !Task.isCancelled, notice == nil {
+            messages.append(ChatMessage(role: .assistant, text: Self.noAnswer))
         }
     }
 
@@ -197,6 +271,7 @@ final class ChatModel: ObservableObject {
         guard phase != .idle else { return }
         replyTask?.cancel()  // closing the connection also tells the server to stop
         replyTask = nil
+        endTurn()
         activity = nil
         runningTools = 0
         phase = .idle
@@ -213,7 +288,9 @@ final class ChatModel: ObservableObject {
                 do {
                     try await client.newConversation()
                     messages = []
+                    currentChat = nil
                     notice = nil
+                    await loadChats()
                     return
                 } catch ChatClientError.busy where attempt < 4 {
                     try? await Task.sleep(nanoseconds: 200_000_000)
@@ -269,12 +346,54 @@ final class ChatModel: ObservableObject {
     }
 
     private func loadHistory() async {
-        guard phase == .idle, let items = try? await client.history() else { return }
-        let loaded = items.map { ChatMessage(role: $0.role == .user ? .user : .assistant, text: $0.text) }
-        guard phase == .idle, loaded.map(\.content) != messages.map(\.content) else { return }
+        guard phase == .idle, let snapshot = try? await client.conversation() else { return }
+        currentChat = snapshot.id
+        let loaded = snapshot.messages.map { ChatMessage(role: $0.role == .user ? .user : .assistant, text: $0.text) }
+        guard phase == .idle, loaded.map(\.content) != messages.filter({ $0.role != .activity }).map(\.content) else {
+            await loadChats()
+            return
+        }
         messages = loaded
-        scrollRequest += 1
         FileLog.shared.info("restored \(loaded.count) messages of the conversation from the server")
+        await loadChats()
+    }
+
+    // MARK: - Earlier chats
+
+    /// The stored conversations, newest first, and the one in progress.
+    @Published private(set) var chats: [StoredChat] = []
+    @Published private(set) var currentChat: Int?
+
+    func loadChats() async {
+        guard let memory = try? await client.memory(), memory.enabled else { return }
+        chats = memory.chats
+    }
+
+    /// Carries on an earlier conversation: its messages come back and the next one continues it.
+    func openChat(_ id: Int) {
+        guard phase == .idle, !isRenaming, id != currentChat else { return }
+        Task {
+            do {
+                let snapshot = try await client.resumeConversation(id)
+                messages = snapshot.messages.map { ChatMessage(role: $0.role == .user ? .user : .assistant, text: $0.text) }
+                currentChat = snapshot.id
+                notice = nil
+            } catch {
+                notice = Self.describe(error)
+            }
+        }
+    }
+
+    /// What to offer above the input before anything is asked: only what works on the screen.
+    var screenSuggestions: [Suggestion] {
+        phase == .idle ? Suggestions.make(hasScreenText: screen?.actionable == true, lastAnswer: nil) : []
+    }
+
+    /// What to offer under the answer: follow-ups to it, or, with no answer, what works on the screen.
+    var suggestions: [Suggestion] {
+        let answer = messages.last(where: { $0.role != .activity })
+        let lastAnswer = answer?.role == .assistant && phase == .idle && answer?.choices.isEmpty == true ? answer?.text : nil
+        return phase == .idle ? Suggestions.make(hasScreenText: screen?.actionable == true, lastAnswer: lastAnswer) : []
     }
 
     /// Keeps count of running tools, and forgets what was being done once the last one is over.
@@ -286,15 +405,25 @@ final class ChatModel: ObservableObject {
         if runningTools == 0 { activity = nil }
     }
 
+    /// Notes what the assistant is doing now; the step before it is finished. They stay under the reply once it is written: what was done is never replaced by the answer.
+    private func addStep(_ text: String, toMessage id: UUID) {
+        guard let index = messages.firstIndex(where: { $0.id == id }) else { return }
+        if messages[index].steps.last?.text == text { return }
+        for step in messages[index].steps.indices { messages[index].steps[step].done = true }
+        messages[index].steps.append(.init(text: text))
+        if messages[index].steps.count > Self.visibleSteps {  // only a runaway turn gets here
+            messages[index].steps.removeFirst(messages[index].steps.count - Self.visibleSteps)
+        }
+    }
+
+    private static let visibleSteps = 40
+
     private func append(_ piece: String, toMessage id: UUID) {
         guard let index = messages.firstIndex(where: { $0.id == id }) else { return }
         messages[index].text += piece
     }
 
-    private func removeIfEmpty(messageID id: UUID) {
-        guard let index = messages.firstIndex(where: { $0.id == id }), messages[index].text.isEmpty else { return }
-        messages.remove(at: index)
-    }
+    private static let noAnswer = "I could not come up with an answer this time. Please try again."
 
     private static func describe(_ error: Error) -> String {
         (error as? LocalizedError)?.errorDescription ?? error.localizedDescription

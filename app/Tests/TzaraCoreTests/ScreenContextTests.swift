@@ -58,23 +58,6 @@ struct ScreenContextTests {
         #expect(ScreenContext(app: "Notes", selection: "hola").actionable)
     }
 
-    @Test func offersTwoOneWordActions() {
-        #expect(QuickAction.allCases.map(\.label) == ["Explain", "Translate"])
-        #expect(QuickAction.allCases.allSatisfy { !$0.label.contains(" ") })
-    }
-
-    @Test func eachActionSendsAMessageAboutThis() {
-        #expect(QuickAction.explain.prompt(translateInto: "German") == "Explain this.")
-        let translate = QuickAction.translate.prompt(translateInto: "German")
-        #expect(translate.contains("into German") && translate.contains("into English instead"))
-    }
-
-    @Test func theSameActionsWorkOnTheLastAnswer() {
-        #expect(QuickAction.explain.prompt(translateInto: "German", on: .reply).contains("simpler terms"))
-        let translate = QuickAction.translate.prompt(translateInto: "German", on: .reply)
-        #expect(translate.hasPrefix("Translate your last answer into German"))
-    }
-
     @Test func textTheUserCopiedIsSaidToBeCopiedAndIsNotSent() throws {
         let copied = ScreenContext(app: "Teams", selection: "hello", copied: true)
         #expect(copied.summary == "Teams \u{00B7} 5 characters copied")
@@ -82,18 +65,6 @@ struct ScreenContextTests {
         #expect(!sent.contains("copied"))
         let back = try JSONDecoder().decode(ScreenContext.self, from: Data(sent.utf8))
         #expect(back.selection == "hello" && back.copied == false)
-    }
-
-    @Test func translatesIntoTheLanguageTheUserChoseOrElseTheMacs() throws {
-        let suite = "tzara-translate-test-\(UUID().uuidString)"
-        let defaults = try #require(UserDefaults(suiteName: suite))
-        defer { defaults.removePersistentDomain(forName: suite) }
-        let preferences = ScreenPreferences(defaults: defaults)
-        #expect(preferences.translateInto == ScreenPreferences.systemLanguage)
-        preferences.translateInto = "  French "
-        #expect(preferences.translateInto == "French")
-        preferences.translateInto = "   "
-        #expect(preferences.translateInto == ScreenPreferences.systemLanguage)
     }
 
     // MARK: - Following the app in front
@@ -156,5 +127,37 @@ struct ScreenContextTests {
         follow.drop()
         follow.start(with: selected)
         #expect(follow.current == selected)
+    }
+
+    // MARK: - Focus, typed text, visible text
+
+    @Test func aContextCarriesTheFocusAndTheTexts() throws {
+        let context = ScreenContext(
+            app: "Outlook", bundle: "com.microsoft.Outlook", focus: "text area \"Message body\"",
+            typing: "Hi Anna", visible: "From: Anna")
+        let json = try JSONSerialization.jsonObject(with: JSONEncoder().encode(context)) as? [String: String]
+        #expect(json?["bundle"] == "com.microsoft.Outlook")
+        #expect(json?["focus"] == "text area \"Message body\"")
+        #expect(json?["typing"] == "Hi Anna" && json?["visible"] == "From: Anna")
+    }
+
+    @Test func typingAndVisibleTextDoNotMakeTwoContextsDifferent() {
+        let before = ScreenContext(app: "Outlook", window: "Re", focus: "text area", typing: "Hi", visible: "a")
+        let after = ScreenContext(app: "Outlook", window: "Re", focus: "text area", typing: "Hi Anna", visible: "b")
+        #expect(before == after)
+        #expect(before != ScreenContext(app: "Outlook", window: "Re", focus: "text field"))
+    }
+
+    @Test func aLongTypedOrVisibleTextIsCut() {
+        let long = String(repeating: "a", count: ScreenContext.maximumText + 100)
+        let context = ScreenContext(typing: long, visible: long)
+        #expect(context.typing.count == ScreenContext.maximumText)
+        #expect(context.visible.count == ScreenContext.maximumText)
+    }
+
+    @Test func anOlderServerResponseWithoutTheNewFieldsStillReads() throws {
+        let json = Data(#"{"app":"Notes","window":"Plans","address":"","selection":""}"#.utf8)
+        let context = try JSONDecoder().decode(ScreenContext.self, from: json)
+        #expect(context.app == "Notes" && context.focus == "" && context.visible == "")
     }
 }

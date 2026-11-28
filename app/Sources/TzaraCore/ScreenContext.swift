@@ -12,21 +12,48 @@ public struct ScreenContext: Codable, Equatable, Sendable {
     /// The text was copied by the user in that app, because the app did not show its selection.
     /// Not sent: it only changes how the box describes it.
     public var copied: Bool
+    /// The application's identifier, such as `com.apple.Safari`.
+    public var bundle: String
+    /// What the user is working in inside the window, such as `text area "Message body"`.
+    public var focus: String
+    /// The text of that field around the cursor: a draft, a message, a line of code. Read when a
+    /// message is sent; the server gives it to the model only if the message is about it.
+    public var typing: String
+    /// The text visible in the window, in reading order. Read when a message is sent.
+    public var visible: String
 
-    private enum CodingKeys: String, CodingKey { case app, window, address, selection }
+    private enum CodingKeys: String, CodingKey {
+        case app, window, address, selection, bundle, focus, typing, visible
+    }
+
+    /// Two contexts are the same subject when they are in the same place with the same selection.
+    /// What is typed or visible changes all the time and must not make the box flicker.
+    public static func == (left: ScreenContext, right: ScreenContext) -> Bool {
+        left.app == right.app && left.window == right.window && left.address == right.address
+            && left.selection == right.selection && left.copied == right.copied
+            && left.bundle == right.bundle && left.focus == right.focus
+    }
 
     /// Most selected characters sent; the server cuts it again to what the model can take.
     public static let maximumSelection = 20_000
 
+    /// Most characters of typed or visible text sent; the server cuts it again.
+    public static let maximumText = 8_000
+
     public init(
         app: String = "", window: String = "", address: String = "", selection: String = "",
-        copied: Bool = false
+        copied: Bool = false, bundle: String = "", focus: String = "", typing: String = "",
+        visible: String = ""
     ) {
         self.app = app
         self.window = window
         self.address = address
         self.selection = String(selection.prefix(Self.maximumSelection))
         self.copied = copied
+        self.bundle = bundle
+        self.focus = focus
+        self.typing = String(typing.prefix(Self.maximumText))
+        self.visible = String(visible.prefix(Self.maximumText))
     }
 
     public init(from decoder: Decoder) throws {
@@ -35,7 +62,11 @@ public struct ScreenContext: Codable, Equatable, Sendable {
             app: try values.decodeIfPresent(String.self, forKey: .app) ?? "",
             window: try values.decodeIfPresent(String.self, forKey: .window) ?? "",
             address: try values.decodeIfPresent(String.self, forKey: .address) ?? "",
-            selection: try values.decodeIfPresent(String.self, forKey: .selection) ?? "")
+            selection: try values.decodeIfPresent(String.self, forKey: .selection) ?? "",
+            bundle: try values.decodeIfPresent(String.self, forKey: .bundle) ?? "",
+            focus: try values.decodeIfPresent(String.self, forKey: .focus) ?? "",
+            typing: try values.decodeIfPresent(String.self, forKey: .typing) ?? "",
+            visible: try values.decodeIfPresent(String.self, forKey: .visible) ?? "")
     }
 
     public var isEmpty: Bool {
@@ -106,44 +137,10 @@ public struct ScreenFollow: Equatable, Sendable {
 
 }
 
-/// One-word actions on what the user has in front of them. Each is sent as an ordinary message.
-public enum QuickAction: CaseIterable, Sendable {
-    case explain, translate
-
-    /// The single word on the button.
-    public var label: String {
-        switch self {
-        case .explain: "Explain"
-        case .translate: "Translate"
-        }
-    }
-
-    /// What an action works on.
-    public enum Target: Sendable {
-        /// What the user has in front of them: the selection, page or document.
-        case screen
-        /// The assistant's last answer.
-        case reply
-
-        fileprivate var words: String { self == .screen ? "this" : "your last answer" }
-    }
-
-    /// The message the button sends. `language` is the one to translate into.
-    public func prompt(translateInto language: String, on target: Target = .screen) -> String {
-        let what = target.words
-        switch self {
-        case .explain: return target == .screen ? "Explain this." : "Explain your last answer in simpler terms."
-        case .translate:
-            return "Translate \(what) into \(language). If it is already in \(language), translate it into English instead."
-        }
-    }
-}
-
 /// Whether Tzara may look at what the user is doing when they open the box. Off until the user
 /// turns it on in Settings.
 public final class ScreenPreferences: @unchecked Sendable {
     static let enabledKey = "useScreenContext"
-    static let translateKey = "translateInto"
 
     private let defaults: UserDefaults
 
@@ -154,21 +151,5 @@ public final class ScreenPreferences: @unchecked Sendable {
     public var enabled: Bool {
         get { defaults.object(forKey: Self.enabledKey) as? Bool ?? false }
         set { defaults.set(newValue, forKey: Self.enabledKey) }
-    }
-
-    /// The language the Translate button translates into: what the user typed in Settings, or
-    /// the language of the Mac.
-    public var translateInto: String {
-        get {
-            let chosen = (defaults.string(forKey: Self.translateKey) ?? "").trimmingCharacters(in: .whitespaces)
-            return chosen.isEmpty ? Self.systemLanguage : chosen
-        }
-        set { defaults.set(newValue, forKey: Self.translateKey) }
-    }
-
-    /// The Mac's language by its English name, such as "German".
-    public static var systemLanguage: String {
-        let code = Locale.current.language.languageCode?.identifier ?? "en"
-        return Locale(identifier: "en").localizedString(forLanguageCode: code) ?? "English"
     }
 }

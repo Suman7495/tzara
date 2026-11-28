@@ -64,6 +64,7 @@ class Memory:
         """
         self._facts: FactStore = personal.facts
         self._log: ConversationLog = personal.log
+        self._activity = personal.activity
         self._settings: MemorySettings = personal.settings
         self._prompts = prompts
         self._blocked = blocked
@@ -111,11 +112,21 @@ class Memory:
                     query, self._settings.recall_results, exclude=self._conversation_id()
                 )
             ]
+        done = (
+            [
+                f"- {time.strftime('%Y-%m-%d %H:%M', time.localtime(item.at))}: {item.summary}"
+                for item in self._activity.search(query, self._settings.recall_results)
+            ]
+            if SearchText.terms(query)
+            else []
+        )
         parts = []
         if facts:
             parts.append("What I know about you:\n" + "\n".join(f"- {fact.text}" for fact in facts))
         if snippets:
             parts.append("From earlier conversations:\n" + "\n".join(snippets))
+        if done:
+            parts.append("What I did for you:\n" + "\n".join(done))
         return "\n\n".join(parts) or "I don't remember anything about that."
 
     @staticmethod

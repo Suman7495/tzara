@@ -12,18 +12,25 @@ Three kinds, as for any assistant:
 Everything lives in one SQLite file in Tzara's data directory, readable only by you.
 """
 
+from tzara.memory.activity import Activity, ActivityLog
+from tzara.memory.capture import FactCapture
 from tzara.memory.database import MemoryDatabase
 from tzara.memory.episodes import ConversationLog, Snippet, StoredMessage
 from tzara.memory.facts import Fact, FactStore, MemoryRefused
 from tzara.memory.personal import PersonalMemory
+from tzara.memory.styles import WritingSamples
 
 __all__ = [
+    "Activity",
+    "ActivityLog",
     "ConversationLog",
     "Fact",
+    "FactCapture",
     "FactStore",
     "MemoryDatabase",
     "MemoryRefused",
     "PersonalMemory",
     "Snippet",
     "StoredMessage",
+    "WritingSamples",
 ]

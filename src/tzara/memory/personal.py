@@ -5,9 +5,12 @@ from __future__ import annotations
 from pathlib import Path
 
 from tzara.config import MemorySettings
+from tzara.memory.activity import ActivityLog
+from tzara.memory.capture import FactCapture
 from tzara.memory.database import MemoryDatabase
 from tzara.memory.episodes import ConversationLog
 from tzara.memory.facts import FactStore
+from tzara.memory.styles import WritingSamples
 
 
 class PersonalMemory:
@@ -26,6 +29,9 @@ class PersonalMemory:
         self.settings = settings
         self.facts = FactStore(database, settings)
         self.log = ConversationLog(database, settings)
+        self.capture = FactCapture(self.facts, settings)
+        self.activity = ActivityLog(database, settings)
+        self.styles = WritingSamples(database, settings)
 
     @classmethod
     def open(cls, settings: MemorySettings, directory: Path | None) -> PersonalMemory | None:
@@ -41,9 +47,11 @@ class PersonalMemory:
         return cls(MemoryDatabase(path), settings)
 
     def erase(self) -> None:
-        """Forget everything: every fact, every stored conversation."""
+        """Forget everything: facts, conversations, what was done, how the user writes."""
         self.facts.clear()
         self.log.clear()
+        self.activity.clear()
+        self.styles.clear()
 
     def close(self) -> None:
         """Close the database."""

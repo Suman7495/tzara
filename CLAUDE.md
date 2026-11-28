@@ -150,36 +150,40 @@ macOS app is a thin client of it. The endpoints are in the [README](README.md#lo
 
 ## macOS App
 
+**Current interface.** There are two windows:
+- **The bar** (`BarController`, `BarView`, `BarState`; logic in TzaraCore `BarBehavior`): the only thing the key opens. Tap Right Option (`WriteKeyDetector`,
+  Settings → Context & writing) and a small glass bar opens beside the pointer, toggling closed on the next tap. The answer area is above the input (it grows upward), then a chip for what Tzara can see
+  (✕ removes it), then the input line; the answer area appears only after something is asked (`BarLayout` sizes it). Enter sends: `BarIntent.decide` picks in code (questions and explain/summarise are always chat, checked first, so "explain this" never replaces a selection; in a text field everything else is written; with no field found only a line that plainly asks for text, which goes to the clipboard) whether
+  the line is **written into the text field** of the app that was in front (`FieldWriter`, see "Writing in other apps") or **answered in the bar** as a chat
+  (`ChatModel`, which still holds the conversation, screen context, steps, choices). It is a **silent companion** with three looks: the **prompt** (input, plus the chip), **only the response** as a bubble while Tzara answers (the input is hidden), then the response
+  with **the prompt again** below it (`BarState.showsInput`, `BarLayout.height`). It is **movable** (drag the background; not remembered) and **goes away when you click another window
+  or switch app** (a global mouse-down monitor and the app-activation notification in `BarController`; the bar never takes the front, so clicks elsewhere reach those apps); the key brings it back.
+  There is no idle timer and no pin. A write hides the bar for
+  the paste so Cmd+V reaches the field, then brings it back without taking the keyboard.
+- **A reply is several boxes, not one blob** (`ChatModel.beginActivity/beginAnswer/endTurn`): what Tzara does (steps with ticks) is an `activity` message, what it says an
+  `assistant` message, in the order they happen (words, then steps, then words each get their own box; an activity box that never got a step is removed). The bar
+  shows only the **latest** message (steps while it works, then the answer); the dashboard shows all of them.
+- **New chat keeps the old one.** The server's stored conversations are listed under "Chats" in the dashboard sidebar; `POST /v1/conversation/resume/{id}`
+  (`ConversationMemory.resume`, `ConversationLog.reopen`) puts one back into the agent, so it can be read and carried on. `GET /v1/conversation` carries its `id`.
+- **Suggestions** (`Suggestions`, TzaraCore, made in code with no model request): under the last answer (Tell me more, Shorter, Simpler, Translate) and, in the bar,
+  above the input when text is selected or a page is open (Explain, Summarize, Translate). In the bar they are always chat, never a write.
+- **Test aids:** `--ask "text"` sends a message from the dashboard after launch. Never start a second server on the port `make dev` uses: a failed start deletes that
+  server's token and address files, and its app then says the server is not running.
+- **The dashboard** (`DashboardController`, `DashboardView`): laid out like a chat app and opened filling the screen: a custom sidebar that folds to a column of icons (its button is inside it), and pages built from `DashboardKit` (`Page`, `Card`, `Line`, `Chip`, `SearchField`): **Chat** (input at the bottom, `ChatModel.ask`, no screen context), **Memory** (`MemoryPage`: facts, activity, writing samples and every stored conversation, searchable, from `GET /v1/memory` and `/v1/memory/conversations/{id}`), **Apps** (`AppsPage`: cards with a drawn logo, search and filters Connected/Available/Needs attention; tools in a sheet), **Docs** (`DocsPage`, text in TzaraCore `DocsContent`), and Settings pages General, Context & writing, About. An ordinary window with a sidebar (New chat, Chat, General, Memory, Context & writing, Apps, About;
+  `SettingsView(page:)`), opened from the menu-bar icon or by reopening the app. While open Tzara is a regular app (Dock icon); closing returns to
+  menu-bar only. Test aids: `--settings [--page apps] --snapshot FILE`, `--show`/`--demo-choices --snapshot FILE` for the bar.
+- `make app` signing can hang on a Keychain prompt for the "Tzara Signing" key; for layout checks run `app/.build/debug/TzaraApp` with the snapshot flags.
+
 `app/` is a Swift package: `TzaraCore` (everything that needs no screen, unit-tested with
 Swift Testing), `TzaraApp` (AppKit and SwiftUI), and `TzaraChatProbe` (streams one reply or
 runs `status`, `models`, `history`, `model`, `rename` from a terminal, to check the client
 against a real server). `make app` builds `app/build/Tzara.app`; `make app-test` runs the tests.
 
-- **The hotkey is a tap, not a press.** `ChordDetector` fires when Control+Option are
-  *released* with nothing else touched, so shortcuts that start with them (window managers use
-  Control+Option+Arrow) never open the box. It is a listen-only `CGEventTap`, so it never
-  alters keystrokes; macOS needs Input Monitoring for that, and the monitor polls until granted.
-- **Placement.** `PanelPlacement` opens the box with its input line under the pointer
-  (pointer offset 28, 22 from the box's corner; `ChatView.inputLine` must match the layout),
-  mirrors it near the right edge, and pushes it inside the screen's usable area.
-- **Cut, Copy, Paste, Select All and Undo are ours.** On macOS those shortcuts belong to the *Edit menu*, and this
-  menu-bar app has none, so Command+V did nothing in the chat box. `ChatBoxPanel.performKeyEquivalent` recognises them
-  (`EditShortcut`, tested) and sends the action down the responder chain to the focused field. Checked with
-  `--press-paste`, which sends Command+V to the box through `NSApp.sendEvent` (never use System Events keystrokes for
-  this: they type into whatever app is in front); without the override nothing pastes.
-- **Closing keeps a reply running.** Esc, the hotkey and the close button only hide the box (the button becomes a
-  minimize while a reply is written); Stop is what cancels. The menu-bar icon shows `ellipsis.bubble` while working and
-  a filled bubble ("reply ready") when a reply ended with the box hidden; opening the box clears it. The auto-updater
-  waits while a reply is being written.
-- **A non-activating panel** (`ChatBoxPanel`) that joins all Spaces and is a full-screen
-  auxiliary window, so it floats over full-screen apps without taking focus or switching
-  Space; it still takes typing (verified with a decoy app in front).
 - **The server is the source of truth** for the conversation, model and name; the app asks on
   each open. `ChatClient` never sends an `Origin` header (the server refuses browser requests)
   and reads bytes itself, because `URLSession`'s line reader drops the blank lines SSE needs.
 - `build_app.sh` refuses to produce a bundle whose executable doesn't match its Info.plist.
-- **Seeing the UI without Screen Recording permission.** Opening `Tzara` shows the box (the login job passes `--background` to skip that),
-  `--settings` opens it on the settings screen, and `--snapshot FILE.png` draws the view into a
+- **Seeing the UI without Screen Recording permission.** `--show` opens the bar and `--settings` the dashboard, and `--snapshot FILE.png` draws the view into a
   PNG after it has loaded (`--snapshot-after SECONDS`, default 3.5, waits longer for late things), then quits (the view draws itself, so nothing is captured from the
   screen). Run against a test server (`TZARA_SERVER_PORT`, `TZARA_DATA_DIR`) so a real one is
   left alone. This is how layout problems, like content too tall for the box, show up.
@@ -289,6 +293,38 @@ the user is in. The server gives a selection to the model once and then calls it
   `remember` and `forget` refuse for a turn whose block brings *new text from the screen* (a selection not given before,
   or page text: `ScreenBlock.brings_text`) but not for one with only the app and window, and an address in the selection
   may be repeated in the reply (the user's own text).
+- **How much context goes with a message** (`ScreenBlock`, `ScreenPage.about_the_screen`): always the small part: app,
+  window, address and the **focus** (`text area "Message body"`: the role and label of the focused element). Only when the
+  message is *about the screen* are two bigger texts added, because they cost seconds of reading and change every message:
+  **typing** (the field's text within 750 characters of the cursor: a draft, a line of code) and **visible** (the window's
+  text in reading order, only if nothing is selected and no page was read). "About the screen" means `screen_words`
+  ("reply", "continue", "this email", "she", "the sender"...) or words of the message that are on the screen ("what amount
+  is she asking for" shares "invoice"/"amount" with the email). The overlap test (`_mostly_on_screen`) is: at least HALF of
+  the message's content words are on the screen, words of five letters or more matched by their first five ("reject" ~
+  "rejection"), words of three or four exactly ("otb"). The first versions ignored short words and exact forms only, and
+  "why did otb reject" about a VC's rejection email went to the web and returned junk; the half rule keeps "weather in
+  Berlin today" a web question even when an email mentions Berlin. The app reads both **when the message is sent** (`BarController.freshContext`, off the main
+  thread), not once a second. Both are dropped from the stored chat after the answer (`forget_page` handles page, typing and
+  window text), and count as new text from the screen (`brings_text`: no research, no `remember`).
+- **The screen comes first, the web is slow** (`ScreenPage.route`, `Route`): for a message the rules say needs the web,
+  with something on the screen to lean on (a selection, typed text, window text or a page): `web_words` ("search", "news",
+  "weather", "who won", "price of"...) -> **WEB**, straight away; any sign it is about the screen (`screen_words` incl. bare
+  "this"/"that"/"it", pronouns, or even ONE shared content word with the screen) -> **SCREEN** (answered from it,
+  `ResearchRouter` told to skip); otherwise -> **ASK**: no search is started on a guess. `Tzara._ask` replies at once
+  ("I could not connect that to what is on your screen. Search online? It takes a while.") with a `Choices` event
+  (server event `choices`; the app draws two buttons under the reply). The question and the ask are kept in the
+  conversation. **Search online** sends `POST /v1/chat` with `message: "Search online."` and `search_for: <the question>`
+  (`Tzara.run(search_for=...)` forces the search for that question whatever the message says); **No search** sends a message
+  telling the model to answer its last question from the screen or from what it knows. With nothing on the screen, or for
+  messages that are not questions for the web, the old rules apply. `ResearchRouter(route=...)` takes the per-turn decision
+  (`"skip"` or `("search", question)`) from `Tzara._turn_route`.
+- **Visible text** (`ScreenReader.readVisible`): depth-first over the focused window's accessibility tree, which follows
+  reading order; skips toolbars, menus and buttons; keeps 12 rows of each table or list, the selected row first; 1,500
+  nodes, 0.4 s, 200 characters an element. Measured: Outlook 2,885 characters in 0.2 s (an unlimited walk found 176,000
+  of mail-list cells), Slack 1,757, Excel 1,286, Chrome 7,663, VS Code (the editor's text near the cursor works),
+  Terminal (screen text), Notes 477; **Teams and Word give nothing**. `--demo-choices` shows an ask with its buttons.
+- **The "Sources:" instruction lives in the research evidence** (`research_results_heading`), not in the system prompt: in the
+  system prompt the 8B model added "Sources: Screen context data" to answers that came from the screen.
 - **The page or document behind the context is read** (`ScreenPage`, no model request): when nothing is selected, the
   context has an address, and the message matches `ScreenSettings.page_words` ("summarize", "this page", "translate"...),
   the server fetches a web address with the guarded `PageReader` (public pages only, no login: a 403 is said plainly in
@@ -296,30 +332,12 @@ the user is in. The server gives a selection to the model once and then calls it
   Markdown, code, CSV, JSON, PDF through `pypdf`; no hidden files or folders, no keys or `.env`, `max_file_bytes`). It
   goes in the block as data. After the answer `ScreenBlock.forget_page` replaces it by a note in the stored message
   (`Tzara._drop_spent_evidence`), so later messages do not re-read it; a follow-up about the page needs the box reopened.
-- **The chip follows the app in front while the box is open** (`ChatBoxController.watch`, once a second): select
+- **The chip follows the app in front while the box is open** (`BarController.watch`, once a second): select
   something else and it changes. `ScreenFollow` (tested) decides what changes it: what the user removed or just sent is
   not put back until it differs. Nothing changes during a reply or when nothing could be read. `ScreenReader.prepare`
   sets `AXManualAccessibility` on each app as it comes to the front: Chrome-based apps (VS Code, Slack) build their
   accessibility tree only when asked and need several seconds, so a read made the instant the box opens found only the
   window title. Each change writes numbers (never text) to `app.log`.
-- **The source line opens** (`ChatModel.screenExpanded`): click it and the window, the address and the selected text show in
-  an area that scrolls past about eight lines (a fixed height, `ChatView.selectionHeight`, because the flexible transcript
-  above would squeeze it); the cross removes the context. `--demo-screen --expand-screen` shows it.
-- **Layout** (`ChatView.contextTray`): one card above the input holds the source line (with ✕), the permission note when
-  needed and the buttons; with only the last answer to work on it is the bare row of buttons. No stacked bars.
-- **Buttons** (`QuickAction`): Explain and Translate, beside "On the selection / this page / the last answer" so the target
-  is never a surprise. They work on the selection, else the page, else the assistant's last answer ("Explain your last
-  answer in simpler terms"); no model request. Translate uses Settings → "Translate into" or the Mac's language, and goes
-  into English if the text already is in it. `--demo-screen` (with `--snapshot`) shows a made-up context.
-- **Layout** (`ChatView.contextTray`): one card above the input holds the source line (with ✕), the permission note when
-  needed and the buttons; with only the last answer to work on it is the bare row of buttons. No stacked bars.
-- **Buttons**: with something to act on (`ScreenContext.actionable`: a selection or an address) the box shows one-word
-  buttons (`QuickAction`: Summarize, Explain, Translate, Rewrite, Shorten) that send an ordinary message about "this".
-  Without a selection or page they act on the **assistant's last answer** ("Summarize your last answer"): the follow-up
-  buttons, with no model request (the old suggestion buttons cost one and were removed). Translate uses Settings → "Translate into" or the Mac's language, and goes into English if the text already is in it.
-  `--demo-screen` (with `--snapshot`) shows a made-up context to look at the chip and buttons.
-- **Look**: `ultraThinMaterial` background, a light gradient rim, and `alphaValue = 0.95` on the panel. The snapshot mode
-  cannot show the material (it draws the view without what is behind it): judge it on screen.
 - A message whose block brings new text (`brings_text`) is **not** routed to web research (`ResearchRouter`): "what
   does this mean?" is about the selection. With only the app and window, or a selection already given, the rules read
   what the user wrote and research happens as usual (the context is on every message, so it must not switch research off).
@@ -342,6 +360,146 @@ the user is in. The server gives a selection to the model once and then calls it
 - Verified live: the window title and address of the front app. Not verified: selected text in each app (Chrome and
   Electron apps need `AXManualAccessibility`, which the reader sets). Not built: replacing the selection in the other
   app (would need simulated keystrokes into whatever is in front), reading the clipboard, files and other apps.
+
+## Connecting apps (MCP)
+
+`tzara/mcp/`: Tzara is an MCP **client**. `McpHub` runs the connections on a thread of its own (the agent is
+synchronous, the protocol is not): one stdio subprocess per app listed in `mcp.json` in the data folder
+(`McpConfigFile`: command, args, env, `tools` allow-list, `allow_actions`, `enabled`; a bad entry is reported and skipped,
+never fatal; saved atomically, mode 0600, because env may hold a token). Each remote tool becomes a `McpTool` named
+`app__tool` (`McpTools.create`), with its JSON schema as `args_schema`; results carry `Prompts.mcp_notice` and are cut at
+`max_result_chars`. Uses the official `mcp` SDK 2.x (`MCPServer`, not FastMCP; `Tool.input_schema`; `stdio_client`).
+- **Safe by default.** Nothing asks the user before a tool sends, deletes or changes something (there is no approval flow),
+  so only tools marked `read_only_hint`, or listed under `tools`, or an app set to `allow_actions`, are offered; the rest are
+  listed in the status as held back with the reason. Results are untrusted text: `Activity` treats any `server__tool` like a web
+  tool (`remember`/`forget` refuse for the turn), and `mcp_rules` says they are data.
+- **Prompt cost.** Every offered tool is prompt text on every message: `max_prompt_chars` and `max_description_chars` (200). Presets
+  select a short list with the server's own flags rather than loading everything.
+- **launchd's PATH has only the system folders**, so Homebrew's `npx`/`node`/`uvx` were not found: programs are looked up
+  with `McpSettings.extra_paths` added, and a missing program says what to install.
+- **Changing apps while running**: `ChatService.add_app` / `remove_app` / `reload_apps` write the file, start a new hub, build
+  and warm a new agent, and only then swap (on any failure the old ones stay); the work runs on a thread, the endpoints
+  return 202, and the app polls `GET /v1/apps` (`reloading`). `POST /v1/apps` takes `{"preset": id}` or `{name, command,
+  args, env, allow_actions}`; `DELETE /v1/apps/{name}`; both 409 while a reply is written. Settings → Apps (`AppsModel`) lists
+  apps and tool counts, an "Add app" menu with the presets and "Other app…" (a form: name, program, arguments, environment,
+  an allow-actions switch with a warning). `--settings --settings-apps` scrolls a snapshot to it. `/apps` in the CLI.
+- **Microsoft 365** (`McpPresets`): three presets over the open-source `@softeria/ms-365-mcp-server` (Softeria, MIT, Node >= 20,
+  Microsoft Graph, 300+ tools): `--preset outlook` (mail, calendar, contacts), `--preset onedrive`, `--org-mode --preset
+  teams`, each with `--read-only`. They are added with `allow_actions` because the server's own read-only mode, not the MCP
+  annotations, is what keeps actions out (not verified that its tools carry the hint). Sign-in is the server's device code: the
+  model calls its login tool and shows the link and code. **Not verified live**: running that package was not done in
+  development (it downloads and runs third-party code); check with `/apps` after adding it.
+- **Tests never start `npx`, `uvx` or `node`** (an autouse fixture in `test_mcp.py` makes them fail): a test of the preset flow
+  once ran the real package, which downloaded it and left a process running. Tests use `tests/mcp_demo_server.py`, a real MCP
+  server over stdio.
+
+## Settings: models, keys, apps
+
+Sections: Name, Model, Memory (a summary and an "Open memory" screen), Context, Apps, About Tzara.
+- **A model is chosen only if it is ready** (`server/setup.py`, `ModelSetup.overview`): `GET /v1/models` gives each model a
+  `need` (`ready`, `download`, `key`, `ollama`). Picking one that is not ready shows what it needs: `POST /v1/models/download`
+  (Ollama `/api/pull` in the background, progress in the same listing), `PUT /v1/keys/{provider}` (`KeyStore`: `keys.json`, `0600`,
+  put in the environment at start, because launchd has none of the shell's variables), or "open Ollama". Then it switches.
+- **Apps with a token** (`McpPreset.token_env`: HubSpot `PRIVATE_APP_ACCESS_TOKEN`): `POST /v1/apps` takes `token`, refused if
+  empty. Added with `allow_actions`: the token's own scopes are the limit, so the hint says to create it read-only. "Add another
+  app" takes a pasted start command (`AppDraft.commandLine`); the name comes from the package.
+- **Remote apps** (`McpServerConfig.url`, https only): Notion is `https://mcp.notion.com/mcp` (its own docs: remote, OAuth in the
+  browser; the old `@notionhq/notion-mcp-server` + token is deprecated and was the wrong thing to offer). `mcp/oauth.py`: the SDK's
+  `OAuthClientProvider` with tokens in `mcp-auth.json` (`0600`, beside `mcp.json`), return address `127.0.0.1:8929/callback`
+  (`McpSettings.callback_port`, fixed because the registration remembers it). **Starting never opens a browser**: an app never signed
+  in reports "sign in needed"; Sign in (`SignIn.start_remote`, the Settings button, started by itself right after Add) opens the
+  page and waits. Never run against the real Notion server: the browser flow is untested; connecting without sign-in is tested
+  with a fake 401 server. **Pitch** (`mcp.pitch.com/mcp`) needs a static client ID that Pitch issues per client: not added.
+  Microsoft's own Agent 365 / Work IQ servers are remote with Entra sign-in and a Copilot licence: not added. iMovie and WhatsApp
+  have only community servers: not added.
+- **The user ticks the tools** (Settings, an app's Tools button; `GET/PUT /v1/apps/{name}/tools`, `McpTools.listing`, `ChatService.set_app_tools`):
+  `tools` in `mcp.json` is the list the model may use, changing things or not. An app with no ticks gets its read-only tools. Together
+  they may take `McpSettings.max_prompt_chars` (14,000: Notion's four basics are about 12,000, measured) and what does not fit is
+  left out with the reason; the PUT refuses too many and says by how much. Notion starts with search, fetch, create-pages and
+  update-page (`McpPresets.NOTION_BASICS`); its other 73 tools stay off until ticked. **Tool search was built, measured and removed**:
+  one lookup injected ~1,900 tokens (9.4 s of reading, one more model step), and the 8B model used the two-step flow badly. Time here is
+  tokens read: `Activity.on_llm_end` logs `model call: read N tokens in X s` for every call; look there first when something is slow.
+  For Claude models, Anthropic's own tool search (`defer_loading`) would be the right tool; not built.
+- **Code does what the small model will not** (`AppRouter`, `Tzara._unconfirmed_change`, `Tzara._events`): a message that names a connected
+  app with a search tool among the ticked ones starts with that search made in code (for the title after "called/named/titled",
+  else the message), so the page id is in front of the model: asked to "add a paragraph", it otherwise called update with no id and asked
+  the user for it. Ids of routed calls must not contain `ResearchRouter.ROUTED`: it took the tools away from the next call. A reply
+  that says "I've added…" with no tool run gets a note, also stored in the history. Silent waits report progress (`waiting_seconds`), and
+  the app lists the steps under the reply. Still unreliable on qwen3:8b: it sometimes ends a multi-step request with an empty reply.
+- **Never allow actions without an approval step.** Notion was added with `allow_actions` to let it write; in a live test the 8B
+  model, asked to add a paragraph, ran `notion-convert-page-to-skill` on a real page. The preset is read-only again (39 of its 77
+  tools). Writing needs the approval flow first (human-in-the-loop, not built); do not turn `allow_actions` on for a preset before it.
+- **Adding or removing an app touches only that app** (`McpHub.add` / `drop`, `ChatService.apply_apps`): the hub lives as long as the
+  server and each app has its own stop signal. It used to build a new hub for every change, which started *every* app again
+  (a minute of `npx` with four Microsoft apps) before anything changed on screen: Remove "did nothing". The agent is rebuilt after
+  each change so its tools match what is connected. `TestAddAndRemoveOneApp` checks the other connections are the same objects.
+- **A nested `ObservableObject` does not redraw its parent's view.** `SettingsView` watches `SettingsModel`, and `AppsModel` is inside
+  it, so Remove / Add / sign-in changed state that no view was listening to: the list stayed as it was until something unrelated
+  refreshed it (the server had finished in a second). `SettingsModel` forwards `apps.objectWillChange`. Do the same for any model
+  put inside another.
+- **Apps look the same** (`SettingsView.appRow`): every ready-made app is a row with Add; once added it shows Remove and a state
+  (dashed circle: not added; spinner: connecting; green tick: connected with tools; orange warning: needs sign-in, could not
+  connect, or connected with no tools offered). Nothing is added until Add is pressed. Pressing Add on an app that needs a token
+  opens its field first; one that signs in starts the sign-in by itself.
+- **Sign in is a button, not the model's job** (`mcp/signin.py`): for a local app, `POST /v1/apps/{name}/signin` runs its own
+  program with `--login` (`McpPreset.signin_args`), picks the link and code out of its message, `GET` reports it, and the apps
+  reconnect when it ends well. Never run against the real Softeria package (parsing tested with a stand-in). Apps still
+  connecting are listed (`ChatService.apps`) so a slow first start (`npx` downloads, `startup_seconds` 60) is visible.
+- **The prompt has a budget for apps' tools** (`McpSettings.max_prompt_chars`; `McpTools.compact` drops titles, defaults and long notes
+  from argument lists): Microsoft 365's server alone is about 340,000 characters, and a plain "hi" took over a minute.
+  `tests/test_agent.py::TestHiStaysFast` is the standing guard: "hi" through the agent stays under a prompt size, and a 150-tool
+  stand-in app adds at most `WITH_APPS_EXTRA` and not all 150 are given. Do not raise those numbers to make a
+  test pass.
+
+## Context, memory of actions, and logs (what a live test showed)
+
+- **An app's own page is read through the app, first.** `ScreenContext.address` on a connected app's site (the app's name is in the
+  host: `Tzara._app_open`) and a message about the page (`_about_open_page`, `ScreenSettings.app_page_words`) make `AppRouter` call the
+  app's fetch tool with that address before the model is asked (0.4 s), skip web research (`_turn_route = "skip"`), and the block
+  says "This is the user's open page in notion". Reading the address as a web page gave "JavaScript must be enabled", and the
+  model then described a page from its own earlier words. `ScreenSettings.noise_pattern` drops such notices from window text.
+  Results of routed calls (`appsearch-` ids) are replaced after the answer (`Prompts.app_spent`).
+- **The stored reply carries what was done** (`agent/actions.py`, `ActionNote`): `[Actions in that reply: tool on target: ok|failed: ...]`
+  is added to the last assistant message (`Tzara._remember_actions`), so "yes", "expand it" and a restart know what happened;
+  `history()` strips it.
+- **Promises are kept** (`PromiseRetry`, `McpSettings.promise_pattern`): a reply that only says "let me fetch..." with no tool call is
+  asked again once with `Prompts.act_now`. **Hints replace long tool descriptions** (`McpSettings.tool_hints`: Notion's update tool needs
+  `command=insert_content`; its own 3,900-character description was cut to 200 and lost that).
+- **Logs show every step at INFO**: screen context numbers, route, each tool (name, argument names; long or spoken text only as a length), duration,
+  result size and the error text, what the model asked for, retries, the note stored. Never message text (that is DEBUG).
+- **The chat keeps the steps** under the reply (`ChatModel` no longer clears them).
+
+## Writing in other apps
+
+**The hotkey is the Right Option key and the only thing it opens is the small bar** (see "macOS App"). **Nothing is written until the user asks in it**. If no
+text field is found (apps that show Accessibility nothing), the bar still works and the text goes on the clipboard ("Press ⌘V"). Email: the body only,
+greeting the named recipient, no subject.
+
+Tap the write key (default Right Option; Settings → Writing) in any text field and the bar opens. `WriteKeyDetector` (TzaraCore, like
+`ChordDetector`: fires on release, spoiled by any other key or modifier) feeds `InlineWriteController`: `ScreenReader.focusedField` (text roles, or a
+container with a text cursor and a settable value; never a password field, checkbox or button), the window text, `POST /v1/write`, then a paste.
+- **Server** (`agent/writer.py`, `InlineWriter`): one model request, no tools, decided in code: the place from app/host/title words
+  (`WriteSettings.places`: chat, social, email, code), the mode from the field (selection: rewrite; empty: reply to the conversation; starts with
+  `instruction_starts` or `/g`: instruct; else polish the draft). Facts about the user and up to 3 of their own earlier drafts for that place go in the
+  system prompt. The screen text is data. Nothing is sent: the text goes into the field and the user sends it.
+- **Guidance bar** (`GuideBar`, `InlineWriteController.guide`): holding the key (0.35 s to 4 s, `WriteKeyDetector.Gesture.hold`) opens a small glass
+  panel (a `ChatBoxPanel`: non-activating, takes typing, the field keeps its place) near the field; Enter sends `instruction` with the request
+  (`edit`: change the text as asked; `guided`: write from the conversation as asked), the bar hides while text is pasted, then returns for the next round; Esc ends it.
+- **Pasting** (`Paster`): clipboard (marked concealed, restored after) plus Command+A/V found in the current layout; paste, not typing, because a typed
+  line break sends a chat message. It checks the same field still has the keyboard first, else leaves the text on the clipboard. Esc cancels, Cmd+Z undoes.
+- **The target is the app in front when Enter is pressed**, not when the bar opened (the bar never takes the front, and the user may have left that app). `NSHostingView.sizingOptions = []`: left alone, the hosting view resized the window from its top-left corner and the bar flowed down the screen.
+- **Tests must never type into the user's apps.** `Tzara --background --write-now SECONDS --only-app NAME` writes only if that app is in front. An early
+  run without that guard pasted into the user's Chrome (a checkbox had focus: now refused) and TextEdit had not come to the front. Verified: field read,
+  server answer (7 s), paste attempted; the paste in a real chat app (Slack, Discord, Teams, LinkedIn) is NOT verified.
+
+## Memory that learns by itself
+
+- **`FactCapture`** (`memory/capture.py`) reads the user's own messages in code (no model request) for "my name is", "I work at", "I live in", "I'm a
+  <role>", "my wife is X", "I prefer/like/hate...", "always/never...", an email: stored as facts, shown as a "Remembered: ..." step. Facts have a `slot`
+  (name, employer, city, role, relation:wife): a new one replaces the old. Skipped: questions, messages over `capture_max_chars`, code.
+- **`ActivityLog`** (table `activity`): what Tzara did (app tool, target, result; text written in another app), injected as "What you did for the user
+  lately" (`MemoryMiddleware`, last 5 within 24 h) and searched by `recall`. **`WritingSamples`**: the user's own drafts per place, used as examples
+  of their tone. `memory.db` is schema version 3 (a `slot` column is added to an older file).
 
 ## Mac tools
 
@@ -387,6 +545,10 @@ reply read everything again (seconds). Measured causes of slowness, all removed:
 
 ## Research
 
+- **Weather comes from Open-Meteo, not a search** (`tools/weather.py`, `WeatherReport`; free, no key): a question with a weather word and a named place
+  ("whats the weather like in darmstadt") is answered by `Researcher.research` from one geocoding and one forecast request, with no web search or model request;
+  search engines returned weather sites that answer programs with a 403. No place named (or not found): the normal search. `QuestionRules.needs_sources` now
+  strips a leading greeting ("hey, ..." used to stop it), reads "what's" as "what", and knows weather, scores, prices and "how much/many" words.
 `tools/research.py`, the `research` tool; **no model request is made inside it**. `agent/routing.py`:
 `QuestionRules` decides from the message's words (`ResearchSettings.question_starts`, `question_words`,
 `chat_patterns`) whether it asks for facts from the web, and `ResearchRouter` (first middleware) then calls `research`

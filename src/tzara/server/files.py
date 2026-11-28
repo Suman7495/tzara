@@ -26,6 +26,7 @@ class ServerPaths:
     TOKEN_NAME = "token"
     INFO_NAME = "server.json"
     NAME_NAME = "name"
+    KEYS_NAME = "keys.json"
 
     @classmethod
     def from_settings(cls, settings: ServerSettings) -> ServerPaths:
@@ -58,6 +59,11 @@ class ServerPaths:
     def name_file(self) -> Path:
         """File holding the assistant's name."""
         return self.directory / self.NAME_NAME
+
+    @property
+    def keys_file(self) -> Path:
+        """File holding the API keys of cloud providers."""
+        return self.directory / self.KEYS_NAME
 
 
 class TokenStore:

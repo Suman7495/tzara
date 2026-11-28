@@ -1,3 +1,4 @@
+import json
 import logging
 import sys
 import warnings
@@ -436,3 +437,127 @@ class TestClosedConnection:
         from helpers import RecordingFakeModel
 
         assert ModelFactory.is_closed(RecordingFakeModel.replying("x")) is False
+
+
+class TestHiStaysFast:
+    """A plain "hi" must stay quick, whatever apps are connected.
+
+    A local model reads the prompt at about 250 tokens a second and Ollama caches only its start,
+    so the size of the system prompt and the tool definitions IS the time to the first word. With
+    Microsoft 365 connected (hundreds of tools, long argument lists) "hi" took over a minute.
+    """
+
+    #: Characters of system prompt and tool definitions (about four to a token).
+    BASE_BUDGET = 6_500
+    WITH_APPS_EXTRA = 14_500
+
+    @staticmethod
+    def prompt_size(agent, model) -> int:
+        from langchain_core.utils.function_calling import convert_to_openai_tool
+
+        system = model.seen_messages[0][0].text
+        tools = [json.dumps(convert_to_openai_tool(tool)) for tool in model.bound_tools]
+        return len(system) + sum(len(text) for text in tools)
+
+    def test_hi_with_no_apps_is_small(self):
+        agent, model = agent_with_fake_model()
+        assert "".join(agent.handle("hi"))
+        assert self.prompt_size(agent, model) < self.BASE_BUDGET
+
+    def test_hi_with_a_huge_app_connected_is_barely_bigger(self):
+        """A stand-in for Microsoft 365: 150 tools, each with 30 arguments and long notes."""
+        from mcp.types import Tool, ToolAnnotations
+
+        from tzara.mcp import McpServerConfig, ServerStatus
+
+        class HugeApp:
+            """What the agent asks of a connected app, without starting anything."""
+
+            settings = TzaraConfig().mcp
+            servers = (McpServerConfig("huge", "x"),)
+
+            def __init__(self) -> None:
+                note = "It is described at length. " * 20
+                self._tools = [
+                    Tool(
+                        name=f"thing_{number}",
+                        description=f"Does thing number {number}. {note}",
+                        input_schema={
+                            "type": "object",
+                            "title": "Arguments",
+                            "properties": {
+                                f"field_{k}": {"type": "string", "title": "F", "description": note}
+                                for k in range(30)
+                            },
+                        },
+                        annotations=ToolAnnotations(read_only_hint=True),
+                    )
+                    for number in range(150)
+                ]
+
+            _status = None
+
+            def status(self):
+                if self._status is None:
+                    self._status = [ServerStatus("huge", connected=True)]
+                return self._status
+
+            def tools(self, _server):
+                return self._tools
+
+        from langchain_core.utils.function_calling import convert_to_openai_tool
+
+        from tzara.mcp import McpTools
+
+        config = TzaraConfig()
+        app = HugeApp()
+        tools = McpTools.create(app, list(app.servers), config.mcp, config.prompts)  # type: ignore[arg-type]
+        assert tools  # something is given...
+        assert len(tools) < 150  # ...but not all 150: they would not fit the prompt
+        assert len(app.status()[0].hidden) == 150 - len(tools)  # and each left out is accounted for
+        with_apps = sum(len(json.dumps(convert_to_openai_tool(tool))) for tool in tools)
+        assert with_apps < self.WITH_APPS_EXTRA
+
+
+class TestAnEmptyReplyIsNeverSilent:
+    """The model sometimes returns nothing; the chat used to delete the bubble and lose the turn."""
+
+    class EmptyThenText(RecordingFakeModel):
+        """Gives no words the first ``empty_times`` times it is asked, then an answer."""
+
+        asked: int = 0
+        empty_times: int = 1
+
+        def _generate(self, messages, *args, **kwargs):
+            from langchain_core.messages import AIMessage
+            from langchain_core.outputs import ChatGeneration, ChatResult
+
+            self.asked += 1
+            text = "" if self.asked <= self.empty_times else "Here you go."
+            return ChatResult(generations=[ChatGeneration(message=AIMessage(content=text))])
+
+        def _stream(self, messages, *args, **kwargs):
+            from langchain_core.messages import AIMessageChunk
+            from langchain_core.outputs import ChatGenerationChunk
+
+            self.asked += 1
+            text = "" if self.asked <= self.empty_times else "Here you go."
+            yield ChatGenerationChunk(message=AIMessageChunk(content=text))
+
+    def test_an_empty_answer_is_asked_for_again_once(self):
+        agent = Tzara(config=TzaraConfig())
+        model = self.EmptyThenText(messages=iter([]))
+        agent._factory.create = fake_creator(model)  # type: ignore[method-assign]
+        agent._create_agent()
+        assert "".join(agent.handle("hello there")) == "Here you go."
+        assert model.asked == 2
+
+    def test_an_answer_that_stays_empty_is_replaced_by_a_sentence_that_is_also_remembered(self):
+        agent = Tzara(config=TzaraConfig())
+        model = self.EmptyThenText(messages=iter([]), empty_times=99)
+        agent._factory.create = fake_creator(model)  # type: ignore[method-assign]
+        agent._create_agent()
+        reply = "".join(agent.handle("hello there"))
+        sentence = TzaraConfig().prompts.empty_reply
+        assert reply == sentence
+        assert agent.history()[-1].text == sentence  # so reopening the chat still shows it

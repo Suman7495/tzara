@@ -12,7 +12,7 @@ import signal
 import threading
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
-from dataclasses import replace
+from dataclasses import asdict, replace
 from types import FrameType
 from typing import Any, ClassVar
 
@@ -24,11 +24,14 @@ from pydantic import BaseModel, Field, field_validator
 from tzara.agent.memory import ConversationMemory
 from tzara.agent.models import ModelCatalog
 from tzara.agent.screen import ScreenContext
+from tzara.agent.writer import WriteRequest
 from tzara.config import ServerSettings, TzaraConfig
+from tzara.mcp import McpConfigFile, McpHub, McpPresets, McpServerConfig
 from tzara.memory import PersonalMemory
 from tzara.server.files import NameStore, ServerInfo, ServerInfoFile, ServerPaths, TokenStore
 from tzara.server.service import (
     ChatService,
+    ChoicesEvent,
     DoneEvent,
     ServiceBusy,
     ServiceNotReady,
@@ -38,6 +41,7 @@ from tzara.server.service import (
     ToolEvent,
     TurnEvent,
 )
+from tzara.server.setup import KeyStore, ModelSetup
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +53,10 @@ class ScreenBody(BaseModel):
     window: str = Field(default="", max_length=2000)
     address: str = Field(default="", max_length=4000)
     selection: str = Field(default="", max_length=200_000)
+    bundle: str = Field(default="", max_length=300)
+    focus: str = Field(default="", max_length=600)
+    typing: str = Field(default="", max_length=100_000)
+    visible: str = Field(default="", max_length=400_000)
 
 
 class ChatRequest(BaseModel):
@@ -56,6 +64,8 @@ class ChatRequest(BaseModel):
 
     message: str
     context: ScreenBody | None = None
+    # The question the "Search online" button searches for; the message is then only its label.
+    search_for: str | None = Field(default=None, max_length=20_000)
 
     @field_validator("message")
     @classmethod
@@ -66,10 +76,53 @@ class ChatRequest(BaseModel):
         return value
 
 
+class WriteBody(BaseModel):
+    """Body of ``POST /v1/write``: the field and the screen, read when the write key was tapped."""
+
+    app: str = Field(default="", max_length=500)
+    bundle: str = Field(default="", max_length=300)
+    window: str = Field(default="", max_length=2000)
+    address: str = Field(default="", max_length=4000)
+    field: str = Field(default="", max_length=200_000)
+    selection: str = Field(default="", max_length=200_000)
+    visible: str = Field(default="", max_length=400_000)
+    instruction: str = Field(default="", max_length=10_000)
+
+
 class ModelRequest(BaseModel):
     """Body of ``PUT /v1/model``."""
 
     model: str
+
+
+class AppRequest(BaseModel):
+    """Body of ``POST /v1/apps``: a ready-made app by ``preset``, or the parts of one."""
+
+    preset: str | None = Field(default=None, max_length=100)
+    name: str = Field(default="", max_length=100)
+    command: str = Field(default="", max_length=1000)
+    args: list[str] = Field(default_factory=list, max_length=100)
+    env: dict[str, str] = Field(default_factory=dict, max_length=50)
+    allow_actions: bool = False
+    token: str = Field(default="", max_length=1000)
+
+
+class KeyRequest(BaseModel):
+    """Body of ``PUT /v1/keys/{provider}``."""
+
+    key: str = Field(max_length=1000)
+
+
+class DownloadRequest(BaseModel):
+    """Body of ``POST /v1/models/download``."""
+
+    model: str = Field(max_length=200)
+
+
+class ToolsRequest(BaseModel):
+    """Body of ``PUT /v1/apps/{name}/tools``: the tools the model may use."""
+
+    tools: list[str] = Field(max_length=500)
 
 
 class NameRequest(BaseModel):
@@ -138,6 +191,7 @@ class TzaraServer:
         token: str,
         settings: ServerSettings,
         info_file: ServerInfoFile | None = None,
+        setup: ModelSetup | None = None,
     ) -> None:
         """Build the application.
 
@@ -147,7 +201,10 @@ class TzaraServer:
             settings: Server settings.
             info_file: Where to record the running server for clients. ``None``
                 records nothing.
+            setup: Tells which models are ready and gets them ready. ``None`` lists every
+                model as ready and refuses downloads and keys.
         """
+        self._setup = setup
         self._service = service
         self._token = token
         self._settings = settings
@@ -180,8 +237,19 @@ class TzaraServer:
             config = replace(config, prompts=replace(config.prompts, assistant_name=saved_name))
         personal = PersonalMemory.open(config.memory, paths.memory_dir)
         conversation = ConversationMemory(log=personal.log if personal else None)
-        service = ChatService(config, memory=conversation, name_store=names, personal=personal)
-        server = cls(service, token, config.server, ServerInfoFile(paths.info_file))
+        mcp = cls._connected_apps(config, paths.directory)
+        service = ChatService(
+            config,
+            memory=conversation,
+            name_store=names,
+            personal=personal,
+            mcp=mcp,
+            mcp_file=paths.directory / config.mcp.file_name,
+        )
+        keys = KeyStore(paths.keys_file)
+        keys.apply()
+        setup = ModelSetup(keys, config.installer.ollama_url)
+        server = cls(service, token, config.server, ServerInfoFile(paths.info_file), setup)
         logger.info("serving on http://%s:%d", config.server.HOST, config.server.port)
         uvicorn_config = uvicorn.Config(
             server.app,
@@ -244,7 +312,14 @@ class TzaraServer:
         self._app.add_api_route("/v1/health", self.health, methods=["GET"])
         self._app.add_api_route("/v1/status", self.status, methods=["GET"], dependencies=protected)
         self._app.add_api_route("/v1/models", self.models, methods=["GET"], dependencies=protected)
+        self._app.add_api_route(
+            "/v1/models/download", self.download_model, methods=["POST"], dependencies=protected
+        )
+        self._app.add_api_route(
+            "/v1/keys/{provider}", self.save_key, methods=["PUT"], dependencies=protected
+        )
         self._app.add_api_route("/v1/chat", self.chat, methods=["POST"], dependencies=protected)
+        self._app.add_api_route("/v1/write", self.write, methods=["POST"], dependencies=protected)
         self._app.add_api_route(
             "/v1/interrupt", self.interrupt, methods=["POST"], dependencies=protected
         )
@@ -259,7 +334,50 @@ class TzaraServer:
             "/v1/conversation", self.conversation, methods=["GET"], dependencies=protected
         )
         self._app.add_api_route("/v1/wake", self.wake, methods=["POST"], dependencies=protected)
+        self._app.add_api_route("/v1/apps", self.apps, methods=["GET"], dependencies=protected)
+        self._app.add_api_route(
+            "/v1/apps", self.add_app, methods=["POST"], status_code=202, dependencies=protected
+        )
+        self._app.add_api_route(
+            "/v1/apps/{name}",
+            self.remove_app,
+            methods=["DELETE"],
+            status_code=202,
+            dependencies=protected,
+        )
+        self._app.add_api_route(
+            "/v1/apps/{name}/tools", self.app_tools, methods=["GET"], dependencies=protected
+        )
+        self._app.add_api_route(
+            "/v1/apps/{name}/tools",
+            self.set_app_tools,
+            methods=["PUT"],
+            status_code=202,
+            dependencies=protected,
+        )
+        self._app.add_api_route(
+            "/v1/apps/{name}/signin",
+            self.start_sign_in,
+            methods=["POST"],
+            status_code=202,
+            dependencies=protected,
+        )
+        self._app.add_api_route(
+            "/v1/apps/{name}/signin", self.sign_in_state, methods=["GET"], dependencies=protected
+        )
         self._app.add_api_route("/v1/memory", self.memory, methods=["GET"], dependencies=protected)
+        self._app.add_api_route(
+            "/v1/conversation/resume/{conversation_id}",
+            self.resume_conversation,
+            methods=["POST"],
+            dependencies=protected,
+        )
+        self._app.add_api_route(
+            "/v1/memory/conversations/{conversation_id}",
+            self.memory_conversation,
+            methods=["GET"],
+            dependencies=protected,
+        )
         self._app.add_api_route(
             "/v1/memory/facts/{fact_id}",
             self.forget_fact,
@@ -284,33 +402,198 @@ class TzaraServer:
             "error": self._service.error,
         }
 
-    async def models(self) -> dict[str, list[dict[str, Any]]]:
-        """List the models Tzara knows about, grouped by provider, in display order."""
+    async def models(self) -> dict[str, Any]:
+        """List the models Tzara knows about, grouped by provider, with what each still needs."""
+        if self._setup is None:
+            return {
+                "providers": [
+                    {
+                        "name": provider,
+                        "models": [
+                            {"id": i, "description": d, "need": "ready"} for i, d in models.items()
+                        ],
+                    }
+                    for provider, models in ModelCatalog.MODELS.items()
+                ],
+                "downloads": [],
+            }
+        setup = self._setup
+        providers = await asyncio.to_thread(setup.overview)
+        downloads = [
+            {"model": d.model, "fraction": d.fraction, "error": d.error, "finished": d.finished}
+            for d in setup.downloads()
+        ]
+        return {"providers": providers, "downloads": downloads}
+
+    async def download_model(self, body: DownloadRequest) -> dict[str, Any]:
+        """Start downloading a local model; ask ``GET /v1/models`` for how far it has got.
+
+        Raises:
+            HTTPException: 422 if the model is not a local one, 501 if downloads are off.
+        """
+        if self._setup is None:
+            raise HTTPException(status_code=501, detail="downloads are not available")
+        try:
+            download = self._setup.start_download(body.model)
+        except ValueError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
+        return {"model": download.model, "fraction": download.fraction}
+
+    async def save_key(self, provider: str, body: KeyRequest) -> dict[str, bool]:
+        """Save the API key of a cloud provider.
+
+        Raises:
+            HTTPException: 422 if the provider is unknown or the key cannot be one.
+        """
+        if self._setup is None:
+            raise HTTPException(status_code=501, detail="keys are not available")
+        try:
+            self._setup.keys.save(provider, body.key)
+        except ValueError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
+        return {"saved": True}
+
+    async def conversation(self) -> dict[str, Any]:
+        """Return the conversation so far (and its id), so a client can show it again."""
+        history = await asyncio.to_thread(self._service.history)
         return {
-            "providers": [
-                {
-                    "name": provider,
-                    "models": [
-                        {"id": model_id, "description": description}
-                        for model_id, description in models.items()
-                    ],
-                }
-                for provider, models in ModelCatalog.MODELS.items()
-            ]
+            "id": self._service.conversation_id,
+            "messages": [{"role": item.role, "text": item.text} for item in history],
         }
 
-    async def conversation(self) -> dict[str, list[dict[str, str]]]:
-        """Return the conversation so far, so a client can show it again."""
-        history = await asyncio.to_thread(self._service.history)
-        return {"messages": [{"role": item.role, "text": item.text} for item in history]}
+    async def resume_conversation(self, conversation_id: int) -> dict[str, Any]:
+        """Carry on an earlier conversation, and return it.
+
+        Raises:
+            HTTPException: 404 if there is no such conversation, 409 if a reply is being written.
+        """
+        try:
+            found = await asyncio.to_thread(self._service.resume_conversation, conversation_id)
+        except ServiceBusy as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+        if not found:
+            raise HTTPException(status_code=404, detail="no such conversation")
+        return await self.conversation()
 
     async def wake(self) -> JSONResponse:
         """Get the model ready if it has been idle. Returns at once; the work goes on behind."""
         return JSONResponse({"waking": self._service.wake()}, status_code=202)
 
+    async def apps(self) -> dict[str, Any]:
+        """List the connected apps, and the ready-made ones that can be added."""
+        return await asyncio.to_thread(self._service.apps_overview)
+
+    async def add_app(self, body: AppRequest) -> dict[str, Any]:
+        """Add an app, by preset or by its parts. It connects in the background.
+
+        Raises:
+            HTTPException: 404 for an unknown preset, 422 if the app is not allowed, 409 if
+                Tzara is busy.
+        """
+        if body.preset:
+            preset = McpPresets.find(body.preset)
+            if preset is None:
+                raise HTTPException(status_code=404, detail="no such ready-made app")
+            server = preset.server
+            if preset.token_env:
+                token = body.token.strip()
+                if not token or any(c.isspace() for c in token):
+                    raise HTTPException(
+                        status_code=422, detail=f"paste the {preset.token_label.lower()} first"
+                    )
+                server = replace(server, env={**server.env, preset.token_env: token})
+        else:
+            if not body.command.strip():
+                raise HTTPException(status_code=422, detail="an app needs a command")
+            server = McpServerConfig(
+                name=body.name.strip(),
+                command=body.command.strip(),
+                args=tuple(body.args),
+                env=dict(body.env),
+                allow_actions=body.allow_actions,
+            )
+        try:
+            await asyncio.to_thread(self._service.add_app, server)
+        except ValueError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
+        except ServiceBusy as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+        return await asyncio.to_thread(self._service.apps_overview)
+
+    async def app_tools(self, name: str) -> dict[str, Any]:
+        """Every tool of an app, and whether the model may use it.
+
+        Raises:
+            HTTPException: 404 if there is no such app.
+        """
+        try:
+            rows = await asyncio.to_thread(self._service.app_tools, name)
+        except ValueError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+        return {"tools": rows, "limit": self._service.tool_limit}
+
+    async def set_app_tools(self, name: str, body: ToolsRequest) -> dict[str, Any]:
+        """Choose the tools of an app the model may use.
+
+        Raises:
+            HTTPException: 422 if a tool is unknown or they are too many for the prompt, 409 if
+                Tzara is busy.
+        """
+        try:
+            await asyncio.to_thread(self._service.set_app_tools, name, body.tools)
+        except ValueError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
+        except ServiceBusy as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+        return await asyncio.to_thread(self._service.apps_overview)
+
+    async def start_sign_in(self, name: str) -> dict[str, Any]:
+        """Start signing in to an app. ``GET`` the same address for the link and code.
+
+        Raises:
+            HTTPException: 422 if the app has no sign-in.
+        """
+        try:
+            state = await asyncio.to_thread(self._service.start_sign_in, name)
+        except ValueError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
+        return asdict(state)
+
+    async def sign_in_state(self, name: str) -> dict[str, Any]:
+        """How signing in to an app is going."""
+        state = self._service.sign_in_state(name)
+        return asdict(state) if state is not None else {"running": False, "done": False}
+
+    async def remove_app(self, name: str) -> dict[str, Any]:
+        """Remove an app. It disconnects in the background.
+
+        Raises:
+            HTTPException: 404 if there is no such app, 409 if Tzara is busy.
+        """
+        try:
+            await asyncio.to_thread(self._service.remove_app, name)
+        except ValueError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+        except ServiceBusy as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+        return await asyncio.to_thread(self._service.apps_overview)
+
+    @staticmethod
+    def _connected_apps(config: TzaraConfig, directory: Any) -> McpHub | None:
+        """The apps listed in the data folder's ``mcp.json``, or ``None`` if there are none."""
+        if not config.mcp.enabled:
+            return None
+        servers, _problems = McpConfigFile.load(directory / config.mcp.file_name)
+        return McpHub(config.mcp, servers, directory / ChatService.AUTH_NAME) if servers else None
+
     async def memory(self) -> dict[str, Any]:
         """List what Tzara remembers about the user, so they can see it."""
         return await asyncio.to_thread(self._service.memory_overview)
+
+    async def memory_conversation(self, conversation_id: int) -> dict[str, Any]:
+        """Everything said in one stored conversation."""
+        messages = await asyncio.to_thread(self._service.memory_conversation, conversation_id)
+        return {"messages": messages}
 
     async def forget_fact(self, fact_id: int) -> Response:
         """Forget one remembered fact.
@@ -333,6 +616,30 @@ class TzaraServer:
         except ServiceBusy as error:
             raise HTTPException(status_code=409, detail=str(error)) from error
         return Response(status_code=204)
+
+    async def write(self, body: WriteBody) -> dict[str, str]:
+        """Write text for a field of another app: what to put there and what it replaces.
+
+        Raises:
+            HTTPException: 404 if writing is off, 503 while the model loads, 409 if a reply is
+                being written, 502 if the model wrote nothing.
+        """
+        try:
+            result = await asyncio.to_thread(self._service.write, WriteRequest(**body.model_dump()))
+        except ServiceNotReady as error:
+            raise HTTPException(status_code=503, detail=str(error)) from error
+        except ServiceBusy as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+        except LookupError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+        except ValueError as error:
+            raise HTTPException(status_code=502, detail=str(error)) from error
+        return {
+            "text": result.text,
+            "mode": result.mode,
+            "place": result.place,
+            "replaces": result.replaces,
+        }
 
     async def chat(self, body: ChatRequest) -> StreamingResponse:
         """Answer a message, streaming the reply as server-sent events.
@@ -358,7 +665,7 @@ class TzaraServer:
 
         try:
             context = ScreenContext(**body.context.model_dump()) if body.context else None
-            turn = self._service.start_turn(body.message, sink, context)
+            turn = self._service.start_turn(body.message, sink, context, body.search_for)
         except ServiceNotReady as error:
             raise HTTPException(status_code=503, detail=str(error)) from error
         except ServiceBusy as error:
@@ -454,6 +761,8 @@ class TzaraServer:
             name, data = "status", {"text": event.text}
         elif isinstance(event, ToolEvent):
             name, data = "tool", {"name": event.name, "state": event.state}
+        elif isinstance(event, ChoicesEvent):
+            name, data = "choices", {"options": event.options}
         elif isinstance(event, DoneEvent):
             name = "done"
             data = {

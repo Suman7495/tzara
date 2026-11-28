@@ -46,11 +46,14 @@ class FactStore:
         self._db = database
         self._settings = settings
 
-    def add(self, text: str) -> tuple[Fact, bool]:
+    def add(self, text: str, slot: str = "") -> tuple[Fact, bool]:
         """Remember ``text``.
 
         Saying the same thing again (in other capitals or punctuation) does not store it twice:
         the earlier fact is kept and marked as just confirmed.
+
+        A fact with a ``slot`` (the user's name, employer, city...) replaces the earlier fact in
+        that slot: a person who moves or changes jobs has one answer, not two that disagree.
 
         Returns:
             The fact, and whether it is new.
@@ -68,21 +71,36 @@ class FactStore:
                 "characters, one thing at a time."
             )
         now = time.time()
+        replaced_at = self._forget_slot(slot, key)
         existing = self._db.execute(f"SELECT {self.COLUMNS} FROM facts WHERE key = ?", (key,))
         if existing:
             self._db.changed(
                 "UPDATE facts SET updated_at = ? WHERE id = ?", (now, existing[0]["id"])
             )
             return self._fact(existing[0], updated_at=now), False
-        if self.count() >= self._settings.max_facts:
+        if replaced_at is None and self.count() >= self._settings.max_facts:
             raise MemoryRefused(
                 f"The memory is full ({self._settings.max_facts} facts). Forget something first."
             )
+        created = now if replaced_at is None else replaced_at
         fact_id = self._db.insert(
-            "INSERT INTO facts(text, key, created_at, updated_at) VALUES (?, ?, ?, ?)",
-            (cleaned, key, now, now),
+            "INSERT INTO facts(text, key, created_at, updated_at, slot) VALUES (?, ?, ?, ?, ?)",
+            (cleaned, key, created, now, slot),
         )
-        return Fact(fact_id, cleaned, now, now), True
+        return Fact(fact_id, cleaned, created, now), True
+
+    def _forget_slot(self, slot: str, keep_key: str) -> float | None:
+        """Delete the fact now in ``slot`` unless it is the one being said again.
+
+        Returns when the replaced fact was first remembered, or ``None`` if nothing was replaced.
+        """
+        if not slot:
+            return None
+        rows = self._db.execute("SELECT id, key, created_at FROM facts WHERE slot = ?", (slot,))
+        if not rows or rows[0]["key"] == keep_key:
+            return None
+        self._db.changed("DELETE FROM facts WHERE id = ?", (rows[0]["id"],))
+        return float(rows[0]["created_at"])
 
     def remove(self, fact_id: int) -> bool:
         """Forget one fact. Returns whether there was one."""

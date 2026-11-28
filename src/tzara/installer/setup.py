@@ -299,7 +299,9 @@ class Installer:
     def _finish(self, opened_app: bool) -> None:
         self._reporter.step("Done")
         if opened_app:
-            self._reporter.note("Tap Control+Option to open the chat box, anywhere.")
+            self._reporter.note(
+                "Tap the Right Option key in any text field to ask Tzara to write there."
+            )
             self._reporter.note("The first time, macOS asks for Input Monitoring. Allow it:")
             self._reporter.note("that is how the app sees the hotkey.")
         self._reporter.note("Or chat in the terminal with: tzara")

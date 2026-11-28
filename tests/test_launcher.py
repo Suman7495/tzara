@@ -142,7 +142,7 @@ class TestChatAndServe:
         calls: list[tuple[Any, ...]] = []
 
         class FakeCLI:
-            def __init__(self, config, log_path, memory, personal):
+            def __init__(self, config, log_path, memory, personal, mcp=None):
                 calls.append(("init", config.model, log_path, memory, personal))
 
             def run(self):
@@ -161,7 +161,7 @@ class TestChatAndServe:
         calls: list[Any] = []
 
         class FakeCLI:
-            def __init__(self, config, log_path, memory, personal):
+            def __init__(self, config, log_path, memory, personal, mcp=None):
                 calls.append(personal)
 
             def run(self):

@@ -74,7 +74,8 @@ struct ScreenReader: Sendable {
     /// The full result of reading `app`, with how it was found.
     func inspect(app: NSRunningApplication?, copiedSince: Int? = nil) -> Reading? {
         guard let app, Self.readable(app) else { return nil }
-        var reading = Reading(context: ScreenContext(app: app.localizedName ?? ""))
+        var reading = Reading(
+            context: ScreenContext(app: app.localizedName ?? "", bundle: app.bundleIdentifier ?? ""))
         guard Self.isAllowed else {
             reading.allowed = false
             return reading
@@ -93,9 +94,13 @@ struct ScreenReader: Sendable {
         }
         if let focused = Self.element(root, kAXFocusedUIElementAttribute) {
             reading.focusedRole = Self.text(focused, kAXRoleAttribute) ?? "?"
-            if reading.focusedRole != "AXSecureTextField", let found = selection(in: focused) {
-                context.selection = String(found.text.prefix(ScreenContext.maximumSelection))
-                reading.via = found.via
+            if reading.focusedRole != "AXSecureTextField" {
+                context.focus = Self.describe(focused, role: reading.focusedRole)
+                context.typing = Self.typedText(in: focused, role: reading.focusedRole)
+                if let found = selection(in: focused) {
+                    context.selection = String(found.text.prefix(ScreenContext.maximumSelection))
+                    reading.via = found.via
+                }
             }
         }
         // Teams, Outlook and others show a selection to the user but not to Accessibility. What
@@ -107,6 +112,112 @@ struct ScreenReader: Sendable {
         }
         reading.context = context
         return reading
+    }
+
+    // MARK: - The focused field
+
+    /// How a role is said in words.
+    private static let roleNames: [String: String] = [
+        "AXTextArea": "text area", "AXTextField": "text field", "AXComboBox": "combo box",
+        "AXWebArea": "web page", "AXTable": "table", "AXOutline": "outline", "AXList": "list",
+        "AXGroup": "group", "AXScrollArea": "scroll area", "AXSplitGroup": "split view",
+    ]
+
+    /// The focused element in words: `text area "Message body"`.
+    private static func describe(_ element: AXUIElement, role: String) -> String {
+        let name = roleNames[role] ?? role.replacingOccurrences(of: "AX", with: "").lowercased()
+        let label = [kAXTitleAttribute, kAXDescriptionAttribute, "AXPlaceholderValue", kAXHelpAttribute]
+            .lazy.compactMap { text(element, $0) }.first { !$0.isEmpty }
+        guard let label else { return name }
+        return "\(name) \"\(label.prefix(60))\""
+    }
+
+    /// Most characters read on each side of the cursor.
+    static let typingRadius = 750
+
+    /// The text of a text field or area around the cursor (or its start, when there is no cursor):
+    /// what the user is writing. Empty for anything that is not a text element, and never for a
+    /// password field.
+    private static func typedText(in element: AXUIElement, role: String) -> String {
+        guard ["AXTextArea", "AXTextField", "AXComboBox"].contains(role),
+            let value = text(element, kAXValueAttribute), !value.isEmpty
+        else { return "" }
+        let units = Array(value.utf16)
+        guard let range = selectedRange(element), range.location >= 0, range.location <= units.count else {
+            return String(value.prefix(typingRadius * 2))
+        }
+        let start = max(0, range.location - typingRadius)
+        let end = min(units.count, range.location + range.length + typingRadius)
+        return String(decoding: units[start..<end], as: UTF16.self)
+    }
+
+    // MARK: - The text visible in the window
+
+    /// Roles whose contents are chrome, not what the user is reading.
+    private static let skippedRoles: Set<String> = [
+        "AXToolbar", "AXMenuBar", "AXMenu", "AXMenuItem", "AXMenuBarItem", "AXScrollBar",
+        "AXSecureTextField", "AXSegmentedControl", "AXPopUpButton", "AXButton", "AXImage",
+    ]
+    /// Roles that hold text a person reads.
+    private static let textRoles: Set<String> = [
+        "AXStaticText", "AXTextArea", "AXTextField", "AXHeading", "AXLink", "AXCell",
+    ]
+    /// Lists and tables: a few rows are enough, and the selected one matters most.
+    private static let listRoles: Set<String> = ["AXTable", "AXOutline", "AXList"]
+
+    static let visibleNodes = 1500
+    static let visibleSeconds = 0.4
+    static let listRows = 12
+    static let textPerElement = 200
+
+    /// The text visible in the window of `app`, in reading order, for a message about it. Walks
+    /// the window's accessibility tree, leaving out toolbars and menus, keeping a few rows of
+    /// each list (the selected row first), and stopping at a size and a time limit, because some
+    /// apps (Outlook) list thousands of rows. Apps that show nothing to Accessibility (Teams)
+    /// give nothing.
+    func readVisible(app: NSRunningApplication?) -> String {
+        guard let app, Self.isAllowed, Self.readable(app) else { return "" }
+        let root = AXUIElementCreateApplication(app.processIdentifier)
+        AXUIElementSetMessagingTimeout(root, Self.answerTimeout)
+        guard let window = Self.element(root, kAXFocusedWindowAttribute) ?? Self.element(root, kAXMainWindowAttribute)
+        else { return "" }
+        var collector = VisibleText(limit: ScreenContext.maximumText)
+        Self.collect(window, into: &collector, started: Date())
+        return collector.text
+    }
+
+    /// Collects text depth first, which follows the order a person reads in.
+    private static func collect(_ element: AXUIElement, into collector: inout VisibleText, started: Date) {
+        guard collector.visited < visibleNodes, !collector.isFull,
+            Date().timeIntervalSince(started) < visibleSeconds
+        else { return }
+        collector.visited += 1
+        let role = text(element, kAXRoleAttribute) ?? ""
+        if skippedRoles.contains(role) { return }
+        if textRoles.contains(role) {
+            let found = text(element, kAXValueAttribute) ?? text(element, kAXTitleAttribute)
+                ?? text(element, kAXDescriptionAttribute) ?? ""
+            collector.add(found, cut: textPerElement)
+            if role != "AXCell" { return }  // a cell can hold more text
+        }
+        var children = children(of: element)
+        if listRoles.contains(role) {
+            let (chosen, others) = (children.filter(isSelected), children.filter { !isSelected($0) })
+            children = chosen + others.prefix(max(0, listRows - chosen.count))
+        }
+        for child in children { collect(child, into: &collector, started: started) }
+    }
+
+    private static func isSelected(_ element: AXUIElement) -> Bool {
+        (value(element, kAXSelectedAttribute) as? Bool) == true
+    }
+
+    /// Everything a read of the window gives: what `read` gives, plus the window's text.
+    func readFull(copiedSince: Int? = nil) -> ScreenContext? {
+        let app = NSWorkspace.shared.frontmostApplication
+        guard var context = inspect(app: app, copiedSince: copiedSince)?.context else { return nil }
+        context.visible = String(readVisible(app: app).prefix(ScreenContext.maximumText))
+        return context
     }
 
     /// What a read of `app` found, in numbers and names, never the text, for `--probe-screen`.
@@ -122,7 +233,84 @@ struct ScreenReader: Sendable {
             "window read: \(found.windowRead), title \(context.window.count) chars, address \(context.address.isEmpty ? "none" : "read")",
             "focused element: \(found.focusedRole)",
             "selection: \(context.selection.count) chars, found by: \(found.via)",
+            "focus: \(context.focus.isEmpty ? "none" : context.focus), typed text \(context.typing.count) chars",
+            "visible window text: \(readVisible(app: app).count) chars",
         ].joined(separator: "\n")
+    }
+
+    // MARK: - The field to write in
+
+    /// The text field in `app` that has the keyboard, for writing into it.
+    struct Field: @unchecked Sendable {
+        let element: AXUIElement
+        let role: String
+        /// All the text in the field, and the part of it that is selected.
+        let value: String
+        let selection: String
+        /// Where it is on the screen (top-left origin), if the app says.
+        let frame: CGRect?
+    }
+
+    /// Roles that are text fields.
+    private static let fieldRoles: Set<String> = ["AXTextArea", "AXTextField", "AXComboBox"]
+    private static let containerRoles: Set<String> = ["AXGroup", "AXWebArea", "AXStaticText", "AXUnknown"]
+
+    private static func isSettable(_ element: AXUIElement, _ attribute: String) -> Bool {
+        var settable: DarwinBoolean = false
+        return AXUIElementIsAttributeSettable(element, attribute as CFString, &settable) == .success
+            && settable.boolValue
+    }
+
+    /// The focused element of `app` if it is a text field that may be written in: not a password
+    /// field, not in a password manager, and one that takes text (a role of a text field, or an
+    /// element with a text cursor, which is what web and Electron composers expose).
+    func focusedField(app: NSRunningApplication?) -> Field? {
+        guard let app, Self.isAllowed, Self.readable(app) else { return nil }
+        let root = AXUIElementCreateApplication(app.processIdentifier)
+        AXUIElementSetMessagingTimeout(root, Self.answerTimeout)
+        AXUIElementSetAttributeValue(root, "AXManualAccessibility" as CFString, kCFBooleanTrue)
+        guard let focused = Self.element(root, kAXFocusedUIElementAttribute) else { return nil }
+        let role = Self.text(focused, kAXRoleAttribute) ?? ""
+        guard role != "AXSecureTextField", Self.text(focused, kAXSubroleAttribute) != "AXSecureTextField" else {
+            return nil
+        }
+        // A text field, or the container a web or Electron composer shows as (it has a text cursor and
+        // takes a new value). Never a checkbox, button or the like: pasting there does nothing useful.
+        let takesText = Self.selectedRange(focused) != nil && Self.isSettable(focused, kAXValueAttribute)
+        guard Self.fieldRoles.contains(role) || (Self.containerRoles.contains(role) && takesText) else {
+            return nil
+        }
+        let value = Self.text(focused, kAXValueAttribute) ?? ""
+        let selected = Self.selection(of: focused)?.text ?? ""
+        return Field(
+            element: focused, role: role, value: value,
+            selection: String(selected.prefix(ScreenContext.maximumText)), frame: Self.frame(of: focused))
+    }
+
+    /// Whether `field` is still the element that has the keyboard in `app`.
+    func isStillFocused(_ field: Field, in app: NSRunningApplication?) -> Bool {
+        guard let app, app.isActive else { return false }
+        let root = AXUIElementCreateApplication(app.processIdentifier)
+        AXUIElementSetMessagingTimeout(root, Self.answerTimeout)
+        guard let now = Self.element(root, kAXFocusedUIElementAttribute) else { return false }
+        return CFEqual(now, field.element)
+    }
+
+    /// The text of `field` now (for checking what was written), or empty.
+    func currentValue(of field: Field) -> String {
+        Self.text(field.element, kAXValueAttribute) ?? ""
+    }
+
+    private static func frame(of element: AXUIElement) -> CGRect? {
+        guard let position = value(element, kAXPositionAttribute), let size = value(element, kAXSizeAttribute),
+            CFGetTypeID(position) == AXValueGetTypeID(), CFGetTypeID(size) == AXValueGetTypeID()
+        else { return nil }
+        var point = CGPoint.zero
+        var extent = CGSize.zero
+        guard AXValueGetValue(position as! AXValue, .cgPoint, &point),  // swiftlint:disable:this force_cast
+            AXValueGetValue(size as! AXValue, .cgSize, &extent)  // swiftlint:disable:this force_cast
+        else { return nil }
+        return CGRect(origin: point, size: extent)
     }
 
     // MARK: - Finding the selection

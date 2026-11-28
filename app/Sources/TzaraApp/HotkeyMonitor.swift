@@ -2,17 +2,21 @@ import CoreGraphics
 import Foundation
 import TzaraCore
 
-/// Watches the keyboard, system-wide, for a tap of the Control+Option chord.
+/// Watches the keyboard, system-wide, for a tap of the write key (Right Option by default).
 ///
 /// This is a listen-only event tap: it sees keystrokes but never changes or swallows them, so
 /// every other shortcut keeps working. macOS only allows it once the user has granted the
 /// app **Input Monitoring**, so until then the monitor asks once and then checks every couple
 /// of seconds, and starts as soon as permission appears.
 final class HotkeyMonitor {
-    /// Called on the main thread when the chord is tapped.
-    var onChordTapped: (() -> Void)?
+    /// Called when the key chosen for writing is tapped alone.
+    var onWriteKey: ((WriteKeyDetector.Gesture) -> Void)?
+    /// The key whose tap writes for the user, or `nil` when that is off.
+    var writeKey: WriteKey? {
+        didSet { writeDetector = writeKey.map { WriteKeyDetector(key: $0) } }
+    }
 
-    private var detector = ChordDetector()
+    private var writeDetector: WriteKeyDetector?
     private var tap: CFMachPort?
     private var source: CFRunLoopSource?
     private var pollTimer: Timer?
@@ -94,7 +98,7 @@ final class HotkeyMonitor {
         CGEvent.tapEnable(tap: tap, enable: true)
         self.tap = tap
         self.source = source
-        FileLog.shared.info("watching for Control+Option (Input Monitoring granted: \(hasPermission))")
+        FileLog.shared.info("watching the keyboard (Input Monitoring granted: \(hasPermission))")
         if !hasPermission { _ = CGRequestListenEventAccess() }
         return true
     }
@@ -112,9 +116,12 @@ final class HotkeyMonitor {
             }
             let seconds = Double(event.timestamp) / 1_000_000_000
             let modifiers = ModifierSet(flags: event.flags)
-            if detector.handle(.modifiersChanged(modifiers, at: seconds)) { onChordTapped?() }
+            let code = Int(event.getIntegerValueField(.keyboardEventKeycode))
+            if let gesture = writeDetector?.handle(.modifiers(keyCode: code, held: modifiers, at: seconds)) {
+                onWriteKey?(gesture)
+            }
         default:
-            _ = detector.handle(.otherInput)
+            _ = writeDetector?.handle(.otherInput)
         }
     }
 }

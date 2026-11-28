@@ -157,7 +157,21 @@ struct ChatClientStreamTests {
         let sent = try JSONSerialization.jsonObject(with: seen.body) as? [String: Any]
         #expect(sent?["message"] as? String == "translate this")
         let sentContext = sent?["context"] as? [String: String]
-        #expect(sentContext == ["app": "Notes", "window": "Plans", "address": "", "selection": "hola"])
+        #expect(sentContext?["app"] == "Notes" && sentContext?["window"] == "Plans")
+        #expect(sentContext?["selection"] == "hola" && sentContext?["address"] == "")
+    }
+
+    @Test func sendsTheQuestionTheSearchButtonSearchesFor() async throws {
+        final class Seen: @unchecked Sendable { var body = Data() }
+        let seen = Seen()
+        let harness = try makeHarness { request in
+            seen.body = body(of: request)
+            return .init(body: sse([("done", #"{"first_token_seconds": null, "characters": 0}"#)]))
+        }
+        _ = try await collect(harness.client.stream("Search online.", searchFor: "capital of Australia"))
+        let sent = try JSONSerialization.jsonObject(with: seen.body) as? [String: Any]
+        #expect(sent?["message"] as? String == "Search online.")
+        #expect(sent?["search_for"] as? String == "capital of Australia")
     }
 
     @Test func leavesTheContextOutWhenThereIsNone() async throws {
@@ -397,6 +411,45 @@ struct ChatClientSettingsTests {
 
         #expect(seen.path == "/v1/memory" && seen.method == "GET")
         #expect(overview == MemoryOverview(enabled: true, facts: [MemoryFact(id: 3, text: "The user likes tea.", created: 1700000000.5)], conversations: 2))
+    }
+
+    private static let appsJSON = #"{"apps": [], "presets": [], "reloading": true, "problems": [], "editable": true}"#
+
+    @Test func addingAReadyMadeAppPostsItsIdAndReadsTheStateBack() async throws {
+        final class Captured: @unchecked Sendable { var method = ""; var path = ""; var body = Data() }
+        let captured = Captured()
+        let harness = try makeHarness { request in
+            captured.method = request.httpMethod ?? ""
+            captured.path = request.url?.path ?? ""
+            captured.body = body(of: request)
+            return .init(body: Data(Self.appsJSON.utf8))
+        }
+        let overview = try await harness.client.addApp(NewApp(preset: "microsoft-365-outlook"))
+        #expect(captured.method == "POST" && captured.path == "/v1/apps")
+        let sent = try JSONSerialization.jsonObject(with: captured.body) as? [String: Any]
+        #expect(sent?["preset"] as? String == "microsoft-365-outlook")
+        #expect(overview.reloading && overview.editable)
+    }
+
+    @Test func removingAnAppDeletesItByName() async throws {
+        final class Captured: @unchecked Sendable { var method = ""; var path = "" }
+        let captured = Captured()
+        let harness = try makeHarness { request in
+            captured.method = request.httpMethod ?? ""
+            captured.path = request.url?.path ?? ""
+            return .init(body: Data(Self.appsJSON.utf8))
+        }
+        _ = try await harness.client.removeApp("microsoft-365")
+        #expect(captured.method == "DELETE" && captured.path == "/v1/apps/microsoft-365")
+    }
+
+    @Test func aFullServerOrBadAppIsReportedNotSwallowed() async throws {
+        let busy = try makeHarness { _ in reply(409, detail: "Tzara is busy; try again in a moment") }
+        await #expect(throws: ChatClientError.busy) { try await busy.client.addApp(NewApp(preset: "x")) }
+        let refused = try makeHarness { _ in reply(422, detail: "the name may only use letters") }
+        await #expect(throws: ChatClientError.messageRejected("the name may only use letters")) {
+            try await refused.client.addApp(NewApp(preset: nil, name: "bad name", command: "x"))
+        }
     }
 
     @Test func forgettingAFactDeletesItByNumber() async throws {

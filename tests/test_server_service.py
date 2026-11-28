@@ -137,6 +137,31 @@ class TestTurns:
         ]
         assert isinstance(events[-1], DoneEvent)
 
+    def test_choices_become_buttons_with_what_each_sends(self):
+        from tzara.agent.events import Choice, Choices
+        from tzara.server.service import ChoicesEvent
+
+        events = ChatTurn._translate(
+            Choices(
+                (
+                    Choice("Search online", "Search online.", "capital?"),
+                    Choice("Use my screen", "No."),
+                )
+            )
+        )
+        assert events == [
+            ChoicesEvent(
+                [
+                    {
+                        "label": "Search online",
+                        "message": "Search online.",
+                        "search_for": "capital?",
+                    },
+                    {"label": "Use my screen", "message": "No.", "search_for": None},
+                ]
+            )
+        ]
+
     def test_each_kind_of_agent_event_becomes_the_right_server_events(self):
         translate = ChatTurn._translate
         assert translate(AssistantDelta("Hi")) == [TokenEvent("Hi")]

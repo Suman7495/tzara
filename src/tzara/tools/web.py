@@ -676,8 +676,17 @@ class WebTools:
         backend = overrides.get("backend") or DuckDuckGoBackend(settings)
         reader = overrides.get("reader") or PageReader(settings, config.prompts)
         extras: list[Any] = overrides.get("extras") or [WikipediaBackend(settings)]
+        from tzara.tools.weather import WeatherReport
+
         researcher = Researcher(
-            config.research, backend, reader, config.prompts, report, cancelled, extras
+            config.research,
+            backend,
+            reader,
+            config.prompts,
+            report,
+            cancelled,
+            extras,
+            overrides.get("weather", WeatherReport(settings)),
         )
         return [
             ReadWebpage(reader, config.prompts.read_webpage_tool),

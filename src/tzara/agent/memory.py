@@ -104,6 +104,26 @@ class ConversationMemory:
         self._conversation_id = None
         self._restore = []
 
+    def resume(self, conversation_id: int) -> bool:
+        """Carry on a conversation from the log: the current one is ended and put aside.
+
+        The messages come back through :meth:`take_restore`, for the agent to put into a fresh
+        checkpoint. Returns ``False`` (and changes nothing) if there is no such conversation.
+        """
+        if self._log is None or conversation_id == self._conversation_id:
+            return self._log is not None and conversation_id == self._conversation_id
+        if not self._log.reopen(conversation_id):
+            return False
+        if self._conversation_id is not None:
+            self._log.finish(self._conversation_id)
+        self._checkpointer.delete_thread(self._thread_id)
+        self._thread_id = self._new_thread_id()
+        self._conversation_id = conversation_id
+        self._restore = [
+            HistoryMessage(m.role, m.text) for m in self._log.messages(conversation_id)
+        ]
+        return True
+
     @contextmanager
     def scratch(self) -> Iterator[RunnableConfig]:
         """Provide a throwaway conversation that leaves no trace.

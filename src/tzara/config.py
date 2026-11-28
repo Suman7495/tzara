@@ -202,6 +202,7 @@ class WebSettings:
             (DuckDuckGo's page): measured here, Yahoo answered in about 1 s while Brave, Startpage
             and Mojeek refused programs. Bing and Google are disabled by ``ddgs`` itself.
         wikipedia_language: Which Wikipedia is asked (``en``, ``de``...).
+        temperature_unit: ``celsius`` or ``fahrenheit``, for weather answers.
         cache_seconds: How long a search result or a page is remembered, so a follow-up question
             on the same subject does not fetch it again.
         max_html_chars: Most HTML read from one page, so a huge or hostile page cannot stall it.
@@ -219,6 +220,7 @@ class WebSettings:
     region: str = "us-en"
     engines: str = "yahoo,brave,startpage,mojeek"
     wikipedia_language: str = "en"
+    temperature_unit: str = "celsius"
     cache_seconds: float = 900.0
     max_html_chars: int = 1_000_000
 
@@ -419,10 +421,26 @@ class ResearchSettings:
         "find me",
         "alternatives",
         "competitors",
+        "weather",
+        "forecast",
+        "temperature",
+        "exchange rate",
+        "stock price",
+        "score",
+        "how much",
+        "how many",
+        "opening hours",
+        "near me",
+        "tonight",
+        "tomorrow",
+        "right now",
+        "this week",
+        "release date",
+        "population",
     )
     chat_patterns: tuple[str, ...] = (
         r"\b(my|mine|i told you|remember that|forget that|you remember)\b",
-        r"^(hi|hello|hey|thanks|thank you|ok|okay|good (morning|evening|night))\b",
+        r"^(thanks|thank you|good (morning|evening|night))\b",
         r"\b(how are you|what'?s up|who are you|what is your name|what are you)\b",
         r"\byou (just )?(said|explained|explain|told|mentioned|wrote)\b",
         r"\d\s*(\+|-|\*|/|x|times|plus|minus|divided by)\s*\d",
@@ -485,9 +503,26 @@ class MemorySettings:
         recall_results: Most results of a search through memory.
         snippet_chars: Longest excerpt of a past message shown in search results.
         restore_chars: Most text of the last conversation put back when Tzara starts.
+        inject_activity: How many of the latest things Tzara did for the user (a page changed, a
+            message written) are told to the model, so "did that work?" and "expand it" know what
+            "it" is, also after a restart. Only the last ``activity_window_seconds`` count.
+        activity_window_seconds: How far back those go.
+        max_activity: Most activity entries kept; the oldest go first.
+        max_samples: Most writing samples kept for each kind of place (chat, email, social).
+        min_sample_chars: Shortest text kept as a sample of how the user writes.
+        max_sample_chars: Longest sample kept (the rest is cut).
+        capture_max_chars: Longest message from which facts are picked up by themselves.
+            Longer text is a paste, not the user speaking about themselves.
     """
 
     enabled: bool = True
+    inject_activity: int = 5
+    activity_window_seconds: int = 86_400
+    max_activity: int = 500
+    max_samples: int = 30
+    min_sample_chars: int = 30
+    max_sample_chars: int = 600
+    capture_max_chars: int = 400
     max_fact_chars: int = 300
     max_facts: int = 200
     inject_facts: int = 10
@@ -510,6 +545,13 @@ class MemorySettings:
             self.recall_results,
             self.snippet_chars,
             self.restore_chars,
+            self.inject_activity,
+            self.activity_window_seconds,
+            self.max_activity,
+            self.max_samples,
+            self.min_sample_chars,
+            self.max_sample_chars,
+            self.capture_max_chars,
         )
         if min(limits) <= 0:
             raise ConfigError("memory limits must be positive")
@@ -524,18 +566,112 @@ class ScreenSettings:
         max_selection_chars: Most selected text given to the model (the rest is cut).
         max_field_chars: Longest app name, window title or address given to the model.
         max_page_chars: Most text of the page or document behind the context given to the model.
+        max_typing_chars: Most text given from the field the user is typing in (around the cursor).
+        max_visible_chars: Most text given from what is visible in the window.
+        web_words: Words in a message that ask for the web outright ("search", "news", "weather").
+            Only these send a question to the web when something relevant could be on the screen.
+        screen_words: Words in a message that mean it is about what is on screen or being typed
+            ("reply to this email", "continue", "fix this"). Only then are the typed text and the
+            window text given to the model: they cost seconds of reading and change every message.
         page_words: Words in a message that mean it is about the page or document the user has
             open ("summarize this page"). Only then is the page read, and only if nothing is
             selected: a selection is what the user means.
         document_suffixes: File types read from disk when the context is a local document. Types
             that hold secrets (keys, ``.env``) are not in the list, and nor are hidden files.
         max_file_bytes: Largest file read.
+        app_page_words: Words in a message about the page the user has open in a connected app
+            ("add a paragraph", "expand it"). Then that page is read through the app, first.
+        noise_pattern: Lines of window or page text that are only a notice from the page or
+            browser ("JavaScript must be enabled"), never what the user is working on. They are
+            left out: the model once answered with one as if it were the page.
     """
 
     enabled: bool = True
+    app_page_words: tuple[str, ...] = (
+        "page", "paragraph", "para", "section", "heading", "text", "note", "doc", "add", "write",
+        "expand", "edit", "rewrite", "shorten", "summar", "translate", "explain", "continue",
+        "it", "this", "that", "here", "fix", "change", "update", "append",
+    )  # fmt: skip
+    noise_pattern: str = (
+        r"(?i)javascript (?:must be|is|needs to be) (?:enabled|turned on)|enable javascript"
+        r"|your browser (?:does not|doesn't) support|please (?:enable|turn on) cookies"
+    )
     max_selection_chars: int = 6000
     max_field_chars: int = 300
     max_page_chars: int = 5000
+    max_typing_chars: int = 1500
+    max_visible_chars: int = 3000
+    web_words: tuple[str, ...] = (
+        "search",
+        "google",
+        "look up",
+        "lookup",
+        "online",
+        "on the web",
+        "internet",
+        "news",
+        "latest",
+        "weather",
+        "forecast",
+        "stock price",
+        "exchange rate",
+        "score",
+        "who won",
+        "price of",
+        "how much does",
+    )
+    screen_words: tuple[str, ...] = (
+        "this email",
+        "this message",
+        "this thread",
+        "this chat",
+        "this conversation",
+        "this code",
+        "this error",
+        "this screen",
+        "this window",
+        "this text",
+        "this draft",
+        "my screen",
+        "the screen",
+        "the window",
+        "on screen",
+        "reply",
+        "respond",
+        "continue",
+        "finish",
+        "fix this",
+        "improve",
+        "proofread",
+        "draft",
+        "summarize",
+        "summarise",
+        "summary",
+        "tl;dr",
+        "translate",
+        "explain",
+        "what does this",
+        "what is this",
+        "what's this",
+        "what am i",
+        # Leaning to the screen: a bare "this", "that" or "it" points at something in front of the
+        # user. If the guess is wrong, the user is asked whether to search online.
+        " this ",
+        " that ",
+        " it ",
+        "email",
+        "document",
+        # Someone on screen, who is not named in the message.
+        " she ",
+        " he ",
+        " her ",
+        " his ",
+        " they ",
+        " their ",
+        " them ",
+        "the sender",
+        "the author",
+    )
     page_words: tuple[str, ...] = (
         "this page",
         "this article",
@@ -593,10 +729,106 @@ class ScreenSettings:
             self.max_selection_chars,
             self.max_field_chars,
             self.max_page_chars,
+            self.max_typing_chars,
+            self.max_visible_chars,
             self.max_file_bytes,
         )
         if min(limits) <= 0:
             raise ConfigError("screen limits must be positive")
+
+
+@dataclass(frozen=True)
+class McpSettings:
+    """Settings for connecting to apps through the Model Context Protocol (MCP).
+
+    The apps to connect are listed in ``mcp.json`` in Tzara's data folder. Every tool of a
+    connected app costs prompt text on every message, so the number and size are limited.
+
+    Attributes:
+        enabled: Whether Tzara connects to the apps in ``mcp.json`` at all.
+        file_name: The file, inside the data folder, that lists the apps.
+        startup_seconds: How long a server may take to start and list its tools.
+        call_seconds: How long one tool call may take.
+        max_result_chars: Most text of one result given to the model.
+        max_prompt_chars: Most text, over all apps' tools (names, descriptions and argument
+            lists), put straight into the prompt of every message. Microsoft 365's server has
+            hundreds of tools with long argument lists, and a local model reads the prompt at
+            about 250 tokens a second: unbounded, a plain "hi" took over a minute. What does not fit
+            is left out, and Settings says so; the user ticks the tools they want.
+        claim_pattern: A regular expression for a reply that says something was changed in an
+            app ("I've added", "I created"). If one matches and no app tool ran, the reply
+            carries a note saying nothing was changed: a small model otherwise reports success
+            it never had.
+        max_description_chars: Longest tool description kept.
+        promise_pattern: A regular expression for a reply that only promises a step ("Let me
+            fetch the page… one moment"). When the model ends its turn with such words and no
+            tool call, it is told once to do the step now instead of announcing it.
+        tool_hints: Short instructions that replace an app tool's own description (by the tool's
+            name in the app). Some descriptions are thousands of characters and are cut to
+            ``max_description_chars``, which loses the one rule that matters (Notion's update tool
+            needs ``command`` set to ``insert_content`` to add text).
+        callback_port: The port on 127.0.0.1 where the browser returns after signing in to a
+            remote app. Fixed, because the app remembers it as part of Tzara's registration.
+        sign_in_seconds: How long the user has to finish signing in to a remote app.
+        extra_paths: Folders added to the search path when an app is started. The server runs
+            under launchd, whose path has only the system folders, so Homebrew's ``npx`` and
+            ``node``, or ``uvx``, would not be found.
+    """
+
+    enabled: bool = True
+    file_name: str = "mcp.json"
+    startup_seconds: float = 60.0
+    call_seconds: float = 30.0
+    max_result_chars: int = 6000
+    max_prompt_chars: int = 14000
+    claim_pattern: str = (
+        r"\bi(?:'ve| have)?\s+(?:now\s+|just\s+|successfully\s+)?"
+        r"(?:added|created|updated|written|wrote|sent|deleted|saved|posted|edited|appended|inserted)\b"
+    )
+    max_description_chars: int = 200
+    promise_pattern: str = (
+        r"\b(?:let me|i(?:'ll| will)|one moment|give me a moment|i need to|first,? i)\b"
+        r".{0,60}\b(?:fetch|check|look|search|read|update|add|get|find|try|open|retrieve|insert)"
+    )
+    tool_hints: Mapping[str, str] = field(
+        default_factory=lambda: {
+            "notion-update-page": (
+                "Change a Notion page. To add text: command=insert_content, page_id=the page's "
+                "address, content=the text in Markdown (it is added at the end). To fix a phrase: "
+                "command=update_content. Never use replace_content unless asked."
+            ),
+            "notion-create-pages": (
+                "Create Notion pages. Give pages=[{properties:{title:...}, content:Markdown}] and "
+                "parent={page_id:...} (omit parent to create a private page)."
+            ),
+            "notion-fetch": "Read a Notion page or database. id=the page's address or id.",
+        }
+    )
+    callback_port: int = 8929
+    sign_in_seconds: float = 300.0
+    extra_paths: tuple[str, ...] = (
+        "/opt/homebrew/bin",
+        "/usr/local/bin",
+        "~/.local/bin",
+        "~/.cargo/bin",
+        "~/.volta/bin",
+    )
+
+    def __post_init__(self) -> None:
+        """Check the limits.
+
+        Raises:
+            ConfigError: If a limit is not positive.
+        """
+        limits = (
+            self.startup_seconds,
+            self.call_seconds,
+            self.max_result_chars,
+            self.max_prompt_chars,
+            self.max_description_chars,
+        )
+        if min(limits) <= 0:
+            raise ConfigError("MCP limits must be positive")
 
 
 @dataclass(frozen=True)
@@ -619,12 +851,78 @@ class CLISettings:
     new_conversation: str = "Started a new conversation."
     log_hint: str = "Details are in the log: {path}"
     memory_off: str = "Memory is turned off (TZARA_MEMORY=false)."
+    mcp_off: str = "Connections to other apps are turned off (TZARA_MCP=false)."
+    mcp_empty: str = (
+        'No apps are connected. List them in {file} (see the README, "Connecting apps").'
+    )
+    mcp_header: str = "Connected apps:"
     memory_empty: str = "Tzara has not remembered anything about you yet."
     memory_header: str = "What Tzara remembers about you ({count} conversations stored):"
     memory_erased: str = "Forgot everything: all facts and all stored conversations."
     erase_usage: str = (
         "This forgets every fact and every stored conversation. To go ahead: /erase-memory yes"
     )
+
+
+@dataclass(frozen=True)
+class WriteSettings:
+    """Settings for writing into the user's own text fields in other apps (LinkedIn, Slack...).
+
+    Attributes:
+        enabled: Whether the server answers write requests.
+        places: For each kind of place, words that identify it: found in the app's name or
+            identifier, the page's host, or the window title. The first kind that matches
+            decides the style of what is written.
+        instruction_starts: Words a field's text may start with that make it an instruction
+            ("reply that I agree") rather than a draft to polish.
+        sample_count: How many of the user's own earlier texts for that place are shown to the
+            model as examples of how they write.
+        max_visible_chars: Most conversation text from the screen given to the model (its end
+            is kept: the latest messages matter most).
+        max_field_chars: Longest field text or selection given to the model.
+        max_output_chars: Longest text written.
+    """
+
+    enabled: bool = True
+    places: Mapping[str, tuple[str, ...]] = field(
+        default_factory=lambda: {
+            "chat": (
+                "slack", "discord", "teams", "whatsapp", "telegram", "signal", "messenger",
+                "mobilesms", "messages", "mattermost", "zulip", "google chat", "hangouts",
+            ),
+            "social": (
+                "linkedin", "twitter", "x.com", "facebook", "instagram", "reddit", "threads",
+                "mastodon", "bsky", "bluesky", "youtube", "medium", "substack",
+            ),
+            "email": (
+                "mail.google", "outlook", "mail", "superhuman", "thunderbird", "spark", "proton",
+            ),
+            "code": (
+                "xcode", "vscode", "visual studio", "cursor", "intellij", "pycharm", "github",
+                "gitlab", "terminal", "iterm", "sublime", "zed",
+            ),
+        }
+    )  # fmt: skip
+    instruction_starts: tuple[str, ...] = (
+        "write", "reply", "respond", "answer", "say", "tell", "ask", "draft", "compose", "make",
+        "translate", "suggest", "give", "decline", "accept", "thank", "congratulate", "invite",
+        "politely", "/g",
+    )  # fmt: skip
+    sample_count: int = 3
+    max_visible_chars: int = 4000
+    max_field_chars: int = 4000
+    max_output_chars: int = 3000
+
+    def __post_init__(self) -> None:
+        """Check the limits.
+
+        Raises:
+            ConfigError: If a limit is not positive.
+        """
+        if min(self.sample_count, self.max_visible_chars, self.max_field_chars) <= 0:
+            raise ConfigError("write limits must be positive")
+        if self.max_output_chars <= 0:
+            raise ConfigError("write limits must be positive")
 
 
 @dataclass(frozen=True)
@@ -644,6 +942,11 @@ class TzaraConfig:
         research: The ``research`` tool, which reads pages to answer bigger questions.
         memory: What Tzara remembers between conversations.
         screen: What the user was looking at, sent by the Mac app.
+        mcp: Connections to other apps through the Model Context Protocol.
+        write: Writing into the user's text fields in other apps.
+        waiting_seconds: How long the reply may be silent before the user is told what is going
+            on, then how much longer before the next note. Reading a long prompt takes many
+            seconds on a local model, and a spinner alone looks like a hang.
         warmup_message: Throwaway message used to load the model and prime
             Ollama's prompt cache before the user's first message.
     """
@@ -660,6 +963,9 @@ class TzaraConfig:
     research: ResearchSettings = field(default_factory=ResearchSettings)
     memory: MemorySettings = field(default_factory=MemorySettings)
     screen: ScreenSettings = field(default_factory=ScreenSettings)
+    mcp: McpSettings = field(default_factory=McpSettings)
+    write: WriteSettings = field(default_factory=WriteSettings)
+    waiting_seconds: tuple[float, ...] = (2.0, 10.0, 30.0)
     warmup_message: str = "hi"
 
     @classmethod
@@ -670,8 +976,8 @@ class TzaraConfig:
         ``TZARA_OLLAMA_KEEP_ALIVE``, ``TZARA_OLLAMA_REASONING``,
         ``TZARA_OLLAMA_RESERVED_TOKENS``, ``TZARA_LOG_LEVEL``, ``TZARA_LOG_FILE``,
         ``TZARA_SERVER_PORT``, ``TZARA_DATA_DIR``, ``TZARA_RELEASE_URL``,
-        ``TZARA_APP_DIR``, ``TZARA_WEB_SEARCH``, ``TZARA_SYSTEM_TOOLS``, ``TZARA_MEMORY`` and
-        ``TZARA_SCREEN``.
+        ``TZARA_APP_DIR``, ``TZARA_WEB_SEARCH``, ``TZARA_SYSTEM_TOOLS``, ``TZARA_MEMORY``,
+        ``TZARA_SCREEN`` and ``TZARA_MCP``.
 
         Args:
             env: Variables to read. Defaults to ``os.environ``.
@@ -725,6 +1031,10 @@ class TzaraConfig:
             screen=replace(
                 defaults.screen,
                 enabled=reader.boolean("SCREEN", defaults.screen.enabled),
+            ),
+            mcp=replace(
+                defaults.mcp,
+                enabled=reader.boolean("MCP", defaults.mcp.enabled),
             ),
         )
 

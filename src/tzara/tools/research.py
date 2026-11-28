@@ -145,6 +145,7 @@ class Researcher:
         report: Callable[[str], None] | None = None,
         cancelled: Callable[[], bool] | None = None,
         extras: list[Any] | None = None,
+        weather: Any = None,
     ) -> None:
         """Create the researcher.
 
@@ -158,7 +159,10 @@ class Researcher:
             extras: More sources searched in the same round, such as Wikipedia: each has
                 ``applies(question)`` and ``hits(query)``. Their results rank below the general
                 search's, but fill in when that finds little.
+            weather: A :class:`~tzara.tools.weather.WeatherReport`. A question about the weather
+                of a named place is answered from it, with no search.
         """
+        self._weather = weather
         self._settings = settings
         self._extras = extras or []
         self._backend = backend
@@ -176,6 +180,15 @@ class Researcher:
         """
         started = time.monotonic()
         question = question.strip()
+        if self._weather is not None and self._weather.applies(question):
+            self._report(self._prompts.weather_checking.format(place=self._weather.place(question)))
+            try:
+                report = self._weather.report(question)
+            except WebError as error:
+                logger.info("weather: %s; searching the web instead", error)
+            else:
+                logger.info("weather: answered from Open-Meteo, %d characters", len(report))
+                return f"{self._prompts.weather_heading}\n\n{report}"
         keywords = PassagePicker.keywords(question)
         queries = self._queries(question, keywords)
         main, extra = self._search(queries, question)

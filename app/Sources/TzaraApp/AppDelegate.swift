@@ -4,18 +4,32 @@ import TzaraCore
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private let hotkey = HotkeyMonitor()
-    private var chatBox: ChatBoxController?
+    private var bar: BarController?
+    private var dashboard: DashboardController?
     private var statusItem: StatusItemController?
     private var autoUpdater: AutoUpdater?
+    private let writePreferences = WritePreferences()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        let chatBox = ChatBoxController(client: ChatClient(), hotkeyIsActive: { [hotkey] in hotkey.isActive })
-        self.chatBox = chatBox
-        statusItem = StatusItemController(hotkey: hotkey, chatBox: chatBox)
+        let bar = BarController(client: ChatClient())
+        let dashboard = DashboardController(model: bar.model, hotkeyIsActive: { [hotkey] in hotkey.isActive })
+        self.bar = bar
+        self.dashboard = dashboard
+        statusItem = StatusItemController(hotkey: hotkey, bar: bar, dashboard: dashboard)
 
-        hotkey.onChordTapped = {
-            FileLog.shared.info("Control+Option tapped")
-            chatBox.toggle()
+        // Tapping or holding the key opens or closes the small bar, beside the pointer.
+        hotkey.onWriteKey = { [writePreferences] gesture in
+            guard writePreferences.enabled else { return }
+            FileLog.shared.info("write key: \(gesture)")
+            bar.toggle()
+        }
+        hotkey.writeKey = writePreferences.enabled ? writePreferences.key : nil
+        NotificationCenter.default.addObserver(
+            forName: .writeSettingsChanged, object: nil, queue: .main
+        ) { [hotkey, writePreferences] _ in
+            MainActor.assumeIsolated {
+                hotkey.writeKey = writePreferences.enabled ? writePreferences.key : nil
+            }
         }
         hotkey.start()
         FileLog.shared.info("started; log at \(FileLog.shared.path)")
@@ -24,21 +38,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Only an installed copy updates itself: one run from the build folder is a developer's.
         let installed = InstalledCopy.isInstalled
         if let version, installed, !CommandLine.arguments.contains("--snapshot") {
-            autoUpdater = AutoUpdater(currentVersion: version, isBusy: { chatBox.isOpen || chatBox.isWorking })
+            autoUpdater = AutoUpdater(currentVersion: version, isBusy: { bar.isOpen || bar.isWorking || dashboard.isOpen })
             autoUpdater?.start()
         }
 
-        // Opening the app by hand shows the box, so there is something to click. The login job
-        // passes `--background` to start quietly instead. `--settings` opens the settings screen.
+        // The only thing a key opens is the small bar. The dashboard (conversation, settings, memory,
+        // apps) opens from the menu-bar icon, or here for `--settings`; `--show` opens the bar, which
+        // the demo and snapshot flags also need.
         let arguments = CommandLine.arguments
-        if !arguments.contains("--background") {
-            let settings = arguments.contains("--settings")
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { chatBox.show(settings: settings) }
+        let inBackground = arguments.contains("--background")
+        let showsDashboard = arguments.contains("--settings")
+        let showsBar = ["--show", "--demo-screen", "--demo-choices", "--bar-ask"].contains(where: arguments.contains)
+            || (arguments.contains("--snapshot") && !showsDashboard)
+        if !inBackground, showsDashboard {
+            // `--page memory|apps|docs|general|context|about` opens that page, for a snapshot.
+            let name = arguments.firstIndex(of: "--page").flatMap { $0 + 1 < arguments.count ? arguments[$0 + 1] : nil }
+            let page: DashboardPage =
+                switch name {
+                case "memory": .memory
+                case "apps": .apps
+                case "docs": .docs
+                default: name.flatMap(SettingsPage.init(rawValue:)).map { .settings($0) } ?? .chat
+                }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { dashboard.show(page) }
+        }
+        if !inBackground, showsBar {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { bar.show() }
         }
         // `--demo-screen` shows a made-up screen context, to check how the chip and buttons look.
         if arguments.contains("--demo-screen") {
-            let expanded = arguments.contains("--expand-screen")
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { chatBox.attachDemoContext(expanded: expanded) }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { bar.attachDemoContext() }
         }
         // `--probe-screen SECONDS` waits, then says in numbers (never the text) what Tzara reads in
         // the app that is in front, and quits: switch to the app, select something, and look.
@@ -49,11 +78,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 NSApplication.shared.terminate(nil)
             }
         }
-        // `--press-paste` sends Command+V to the box a moment after it opens (for checking paste).
-        if arguments.contains("--press-paste") {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { chatBox.pressPaste() }
+        // `--ask "text"` sends a message from the dashboard's chat a moment after launch, to look at how
+        // the reply is laid out (use with `--settings --snapshot FILE --snapshot-after SECONDS`).
+        if let flag = arguments.firstIndex(of: "--ask"), flag + 1 < arguments.count {
+            let text = arguments[flag + 1]
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) { bar.model.ask(text) }
         }
-        // `--snapshot FILE` draws the box into a PNG after it has loaded, then quits. Add
+        // `--bar-ask "text"` sends a message from the bar after it opens (use with `--show --snapshot ...`).
+        if let flag = arguments.firstIndex(of: "--bar-ask"), flag + 1 < arguments.count {
+            let text = arguments[flag + 1]
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) { bar.ask(text) }
+        }
+        // `--demo-choices` shows a reply that asks "Search online?" with its buttons.
+        if arguments.contains("--demo-choices") {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { bar.showDemoChoices() }
+        }
+        // `--snapshot FILE` draws the bar (or, with --settings, the dashboard) into a PNG after it has loaded, then quits. Add
         // `--snapshot-after SECONDS` to wait longer, for things that arrive late.
         if let flag = arguments.firstIndex(of: "--snapshot"), flag + 1 < arguments.count {
             let path = arguments[flag + 1]
@@ -64,15 +104,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 wait = seconds
             }
             DispatchQueue.main.asyncAfter(deadline: .now() + wait) {
-                chatBox.snapshot(to: path)
+                if showsDashboard { dashboard.snapshot(to: path) } else { bar.snapshot(to: path) }
                 NSApplication.shared.terminate(nil)
             }
         }
     }
 
-    /// Opening the app again while it runs (Finder, Spotlight, `open`) shows the box.
+    /// Opening the app again while it runs (Finder, Spotlight, `open`) shows the dashboard.
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        chatBox?.show(settings: false)
+        dashboard?.show()
         return false
     }
 

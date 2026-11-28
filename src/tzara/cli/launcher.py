@@ -11,6 +11,7 @@ from typing import ClassVar
 
 from tzara.config import ConfigError, TzaraConfig
 from tzara.logs import LogConfigurator
+from tzara.mcp import McpConfigFile, McpHub
 from tzara.memory import PersonalMemory
 from tzara.server.daemon import DaemonError, DaemonManager, DaemonStatus
 from tzara.server.files import ServerPaths
@@ -93,15 +94,24 @@ class Launcher:
         from tzara.agent.memory import ConversationMemory
         from tzara.cli.run import TzaraCLI
 
-        personal = PersonalMemory.open(
-            self._config.memory, ServerPaths.from_settings(self._config.server).directory
-        )
-        TzaraCLI(
-            config=self._config,
-            log_path=self._log_path,
-            memory=ConversationMemory(log=personal.log if personal else None),
-            personal=personal,
-        ).run()
+        directory = ServerPaths.from_settings(self._config.server).directory
+        personal = PersonalMemory.open(self._config.memory, directory)
+        mcp = None
+        if self._config.mcp.enabled:
+            servers, _problems = McpConfigFile.load(directory / self._config.mcp.file_name)
+            auth_file = directory / "mcp-auth.json"
+            mcp = McpHub(self._config.mcp, servers, auth_file) if servers else None
+        try:
+            TzaraCLI(
+                config=self._config,
+                log_path=self._log_path,
+                memory=ConversationMemory(log=personal.log if personal else None),
+                personal=personal,
+                mcp=mcp,
+            ).run()
+        finally:
+            if mcp is not None:
+                mcp.close()
         return EXIT_OK
 
     def serve(self) -> int:

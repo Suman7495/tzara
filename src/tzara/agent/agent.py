@@ -5,27 +5,47 @@ from __future__ import annotations
 import contextlib
 import logging
 import queue
+import re
 import threading
 import time
 import warnings
-from collections.abc import Generator
+from collections.abc import Callable, Generator
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
+from urllib.parse import urlparse
 
 from langchain.agents import create_agent
 from langchain.agents.middleware import SummarizationMiddleware
 from langchain_core._api import LangChainBetaWarning
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
+from tzara.agent.actions import ActionNote
 from tzara.agent.activity import Activity
-from tzara.agent.events import AgentEvent, AssistantDelta, Progress, RunCompleted
+from tzara.agent.events import (
+    AgentEvent,
+    AssistantDelta,
+    Choice,
+    Choices,
+    Progress,
+    RunCompleted,
+    ToolCompleted,
+    ToolStarted,
+)
 from tzara.agent.links import LinkGuard
 from tzara.agent.memory import ConversationMemory, HistoryMessage
 from tzara.agent.models import ModelFactory
 from tzara.agent.personal import MemoryMiddleware
-from tzara.agent.routing import QuestionRules, ResearchRouter
-from tzara.agent.screen import ScreenBlock, ScreenContext, ScreenPage
+from tzara.agent.routing import (
+    AppRouter,
+    EmptyReplyRetry,
+    PromiseRetry,
+    QuestionRules,
+    ResearchRouter,
+)
+from tzara.agent.screen import Route, ScreenBlock, ScreenContext, ScreenPage
+from tzara.agent.writer import InlineWriter, WriteRequest, WriteResult
 from tzara.config import TzaraConfig
+from tzara.mcp import McpHub, McpTool, McpTools
 from tzara.memory import PersonalMemory
 from tzara.tools.memory import MemoryTools
 from tzara.tools.system import SystemTools
@@ -47,13 +67,17 @@ class _Failure:
 class _CheckedReply:
     """Passes the reply through the link guard and keeps what was written and what was shown."""
 
-    def __init__(self, guard: LinkGuard, started: float) -> None:
+    def __init__(
+        self, guard: LinkGuard, started: float, closing_note: Callable[[str], str]
+    ) -> None:
         """Start checking a reply.
 
         Args:
             guard: Removes links the agent did not see.
             started: When the turn began, for the time to the first piece.
+            closing_note: Given the finished reply, returns text to add at its end (or nothing).
         """
+        self._closing_note = closing_note
         self._guard = guard
         self._started = started
         self._written: list[str] = []
@@ -77,6 +101,7 @@ class _CheckedReply:
             return self._show(self._guard.feed(item.text))
         if isinstance(item, RunCompleted):
             events = self._show(self._guard.finish())
+            events += self._show(self._closing_note(self.written))
             return [*events, RunCompleted(self.first_token_after, len(self.shown))]
         return [item]
 
@@ -108,6 +133,7 @@ class Tzara:
         config: TzaraConfig | None = None,
         memory: ConversationMemory | None = None,
         personal: PersonalMemory | None = None,
+        mcp: McpHub | None = None,
     ) -> None:
         """Create the agent.
 
@@ -119,6 +145,7 @@ class Tzara:
                 switch.
             personal: What Tzara knows about the user and has talked about before. Gives it
                 the remember, forget and recall tools. ``None`` means it keeps nothing.
+            mcp: The connected apps, whose tools it is given beside its own. ``None`` means none.
         """
         self._config = config or TzaraConfig()
         self._model = model or self._config.model
@@ -144,18 +171,31 @@ class Tzara:
             blocked=lambda: self._activity.read_the_web,
             conversation_id=lambda: self._memory.conversation_id,
         )
-        self._tools = [*web_tools, *system_tools, *memory_tools]
+        app_tools = (
+            McpTools.create(mcp, mcp.servers, self._config.mcp, self._config.prompts) if mcp else []
+        )
+        self._app_rules = bool(app_tools)
+        self._tools = [*web_tools, *system_tools, *memory_tools, *app_tools]
+        self._app_names = sorted({tool.server for tool in app_tools if isinstance(tool, McpTool)})
         self._stream: GraphRunStream | None = None
         self._cancel_requested = False
         # Set when the model's connection has been closed to stop a reply: it cannot be used again.
         self._connection_closed = False
         self._last_selection = ""
         self._selection_conversation: int | None = None
+        # What to do with this turn's message if it was decided before the model is asked:
+        # "skip" (no web), ("search", question), or None (the rules decide).
+        self._turn_route: str | tuple[str, str] | None = None
+        # The connected app and address of the page the user has open, when this turn's message
+        # is about it: the app router reads it first.
+        self._turn_open_page: tuple[str, str] | None = None
+        self._question_rules = QuestionRules(self._config.research)
 
         # The v3 streaming protocol is flagged as beta, and langchain_core
         # re-enables the warning on import, so it would be printed into the chat.
         warnings.filterwarnings("ignore", category=LangChainBetaWarning)
 
+        self._writer = InlineWriter(lambda: self._chat_model, self._config, personal)
         self._create_agent()
         self._restore_history()
 
@@ -169,7 +209,12 @@ class Tzara:
         """The conversation this agent is part of."""
         return self._memory
 
-    def run(self, text: str, context: ScreenContext | None = None) -> Generator[AgentEvent]:
+    def run(
+        self,
+        text: str,
+        context: ScreenContext | None = None,
+        search_for: str | None = None,
+    ) -> Generator[AgentEvent]:
         """Answer one user message, as typed events in the order they happen.
 
         The message and reply are added to the conversation. Events from the model (pieces of
@@ -182,6 +227,8 @@ class Tzara:
             text: The user's message.
             context: What the user was looking at, to be put in front of the message for the
                 model. It is not part of what the user said: history shows ``text`` alone.
+            search_for: A question to search the web for whatever the message says. It is what
+                the "Search online" button sends: the message is only its label.
 
         Yields:
             :class:`AssistantDelta`, :class:`ToolStarted`, :class:`ToolCompleted` and
@@ -189,6 +236,8 @@ class Tzara:
         """
         self._reopen_if_closed()
         self._cancel_requested = False
+        self._turn_route = ("search", search_for) if search_for else None
+        self._turn_open_page = None
         logger.info("turn started: %d characters", len(text))
         logger.debug("user message: %s", text)
         started = time.monotonic()
@@ -199,20 +248,70 @@ class Tzara:
         shown_to_model = text
         if context is not None and not context.empty and self._config.screen.enabled:
             page, page_note = "", ""
-            if self._screen_page.wanted(text, context):
+            open_in = self._app_open(context)
+            if open_in and self._about_open_page(text, context):
+                self._turn_open_page = (open_in, context.address)
+                if search_for is None:
+                    self._turn_route = "skip"  # about the open page, not the web
+            if not open_in and self._screen_page.wanted(text, context):
                 yield Progress(self._config.prompts.screen_reading)
                 page, page_note = self._screen_page.read(context)
             unchanged = self._selection_seen(context)
+            typing = visible = ""
+            route = Route.DEFAULT
+            if search_for is None:
+                route = self._screen_page.route(
+                    text, context, self._question_rules.needs_sources(text), bool(page)
+                )
+            if route is Route.ASK:
+                yield from self._ask(text)
+                return
+            if route is Route.SCREEN:
+                self._turn_route = "skip"
+            elif route is Route.WEB:
+                self._turn_route = ("search", text)
+            if route is Route.SCREEN or self._screen_page.about_the_screen(text, context):
+                typing = context.typing
+                # The window's text is for when nothing more specific is meant.
+                if not page and not context.selection:
+                    visible = context.visible
             shown_to_model = ScreenBlock.wrap(
-                context, text, self._config.screen, page, page_note, unchanged
+                context,
+                text,
+                self._config.screen,
+                page,
+                page_note,
+                unchanged,
+                typing,
+                visible,
+                open_in,
+            )
+            logger.info(
+                "screen context: app=%s, address host=%s, window %d chars, route=%s, "
+                "selection %d, typing %d, visible %d, page %d chars; open page of a connected "
+                "app: %s",
+                context.app,
+                urlparse(context.address).hostname or ("path" if context.address else "none"),
+                len(context.window),
+                route.name,
+                len(context.selection),
+                len(typing),
+                len(visible),
+                len(page),
+                open_in or "no",
             )
             if ScreenBlock.brings_text(shown_to_model):
                 # New text from the screen may hold instructions: nothing is remembered on its say.
                 self._activity.distrust()
+        else:
+            logger.info("screen context: none sent")
         # An address the user typed, or had selected, is theirs to be repeated.
         self._activity.links.collect(shown_to_model)
-        checked = _CheckedReply(LinkGuard(self._activity.links.trusts), started)
+        checked = _CheckedReply(LinkGuard(self._activity.links.trusts), started, self._closing_note)
         self._activity.listen(inbox.put)
+        if self._personal is not None and search_for is None:
+            for fact in self._personal.capture.learn(text):
+                yield Progress(self._config.prompts.learned.format(fact=fact.text))
         stream = self._agent.stream_events(
             {"messages": [{"role": "user", "content": shown_to_model}]},
             {**self._memory.run_config, "callbacks": [self._activity]},
@@ -228,7 +327,7 @@ class Tzara:
         ).start()
 
         try:
-            while (item := inbox.get()) is not None:
+            for item in self._events(inbox):
                 if isinstance(item, _Failure):
                     raise item.error
                 for event in checked.process(item):
@@ -244,16 +343,83 @@ class Tzara:
             if self._stream is stream:
                 self._stream = None
             stream.abort()
+            self._remember_stand_in(checked.written, checked.shown)
             self._keep_only_seen_links(checked.written, checked.shown)
             self._drop_spent_evidence()
-            self._memory.record("assistant", checked.shown)
+            note = self._remember_actions()
+            self._memory.record("assistant", checked.shown + note)
             logger.info(
-                "turn %s: first token after %s, total %.1fs, %d reply characters",
+                "turn %s: tools run %s; first token after %s, total %.1fs, %d reply characters",
                 outcome,
+                sorted(self._activity.tools_run) or "none",
                 "n/a" if checked.first_token_after is None else f"{checked.first_token_after:.1f}s",
                 time.monotonic() - started,
                 len(checked.shown),
             )
+
+    def _events(
+        self, inbox: queue.Queue[AgentEvent | _Failure | None]
+    ) -> Generator[AgentEvent | _Failure]:
+        """What arrives in ``inbox``, with a note on what is going on whenever it is silent.
+
+        Reading a long prompt takes many seconds on a local model; the user is told so, in turn,
+        until the reply starts to be written.
+        """
+        prompts = self._config.prompts
+        marks = self._config.waiting_seconds
+        last, noted, after_tool, writing = time.monotonic(), 0, False, False
+        while True:
+            timeout = None
+            if not writing and noted < len(marks):
+                timeout = max(0.05, marks[noted] - (time.monotonic() - last))
+            try:
+                item = inbox.get(timeout=timeout)
+            except queue.Empty:
+                texts = (
+                    prompts.waiting_result if after_tool else prompts.waiting_reading,
+                    prompts.waiting_still,
+                    prompts.waiting_long,
+                )
+                yield Progress(texts[min(noted, len(texts) - 1)])
+                noted += 1
+                last = time.monotonic()
+                continue
+            if item is None:
+                return
+            last, noted = time.monotonic(), 0
+            writing = writing or isinstance(item, AssistantDelta)
+            after_tool = isinstance(item, ToolCompleted) or (
+                after_tool and not isinstance(item, ToolStarted)
+            )
+            yield item
+
+    def _closing_note(self, reply: str) -> str:
+        """What to add at the end of a finished reply: a stand-in for none, or a warning.
+
+        A reply the model left empty is replaced by a plain sentence, so nothing silently
+        vanishes. A reply that claims a change in an app is warned about by
+        :meth:`_unconfirmed_change`.
+        """
+        if not reply.strip():
+            logger.warning("the reply was empty: showing the stand-in sentence")
+            return self._config.prompts.empty_reply
+        note = self._unconfirmed_change(reply)
+        if note:
+            logger.warning("the reply claims a change but no tool ran: warning added")
+        return note
+
+    def _unconfirmed_change(self, reply: str) -> str:
+        """A note for a reply that says something was changed in an app when no app tool ran.
+
+        A small model reports success it never had. Decided here, in code, from the words of the
+        reply and the tools that ran: no model request. Left alone if any tool ran (such as
+        ``remember``), since "I've added that" may then be true.
+        """
+        if not self._app_rules or self._activity.tools_run:
+            return ""
+        if re.search(self._config.mcp.claim_pattern, reply, re.IGNORECASE):
+            return self._config.prompts.unconfirmed_change
+        return ""
 
     def handle(self, text: str) -> Generator[str]:
         """Stream the text of the reply to one user message.
@@ -311,7 +477,7 @@ class Tzara:
         messages = (state.values or {}).get("messages", [])
         roles = {"human": "user", "ai": "assistant"}
         return [
-            HistoryMessage(roles[message.type], ScreenBlock.remove(message.text))
+            HistoryMessage(roles[message.type], ActionNote.strip(ScreenBlock.remove(message.text)))
             for message in messages
             if message.type in roles and message.text.strip()
         ]
@@ -340,8 +506,8 @@ class Tzara:
 
         Model calls run in a worker thread blocked on the HTTP response. Closing
         the connection makes that read fail and stops generation. Without it,
-        unwinding the stream or exiting the interpreter waits for the model to
-        finish generating.
+            unwinding the stream or exiting the interpreter waits for the model to
+            finish generating.
 
         Quick and non-blocking, so it is safe to call from a signal handler. The
         agent cannot be used again until :meth:`interrupt` rebuilds it.
@@ -364,6 +530,101 @@ class Tzara:
             stream.abort()
 
         self._create_agent()
+
+    def _ask(self, text: str) -> Generator[AgentEvent]:
+        """Ask whether to search online, for a question that seems unrelated to the screen.
+
+        A search takes many seconds, so it is not started on a guess. The question and this
+        reply are kept in the conversation, so the buttons that follow have something to refer to.
+        """
+        prompts = self._config.prompts
+        ask = prompts.screen_ask
+        started = time.monotonic()
+        logger.info("asking whether to search online")
+        yield AssistantDelta(ask)
+        yield Choices(
+            (
+                Choice(prompts.choice_search_label, prompts.choice_search_message, search_for=text),
+                Choice(prompts.choice_screen_label, prompts.choice_screen_message),
+            )
+        )
+        self._agent.update_state(
+            self._memory.run_config,
+            {"messages": [HumanMessage(content=text), AIMessage(content=ask)]},
+            as_node="model",
+        )
+        self._memory.record("user", text)
+        self._memory.record("assistant", ask)
+        yield RunCompleted(time.monotonic() - started, len(ask))
+
+    def _app_open(self, context: ScreenContext) -> str:
+        """The connected app whose own page the user has open, or empty.
+
+        Found by the app's name in the address's host (``notion`` in ``app.notion.com``): then
+        the address is the page to act on, and the model is told so.
+        """
+        host = (urlparse(context.address).hostname or "").lower()
+        for app in self._app_names:
+            words = [word for word in app.lower().split("-") if len(word) >= 4]
+            if any(word in host for word in words):
+                return app
+        return ""
+
+    def write(self, request: WriteRequest) -> WriteResult:
+        """Write text for the user to put into a field of another app.
+
+        One model request, no tools: see :class:`InlineWriter`.
+
+        Raises:
+            ValueError: If the model wrote nothing.
+        """
+        self._reopen_if_closed()
+        return self._writer.write(request)
+
+    def _about_open_page(self, text: str, context: ScreenContext) -> bool:
+        """Whether the message is about the page open in a connected app (not small talk)."""
+        words = set(re.findall(r"[a-z]+", text.lower()))
+        if self._screen_page.asks_for_the_web(text):
+            return False
+        stems = self._config.screen.app_page_words
+        return self._screen_page.about_the_screen(text, context) or any(
+            word == stem or (len(stem) >= 5 and word.startswith(stem))
+            for word in words
+            for stem in stems
+        )
+
+    def _remember_actions(self) -> str:
+        """Add what the reply did (which tool, on what, with what result) to the stored reply.
+
+        The model's memory of a past reply is its words only; after "yes" or "expand it" it
+        must know what was done and whether it worked. Returns the note written, if any.
+        """
+        records = list(self._activity.actions)
+        note = ActionNote.render(records)
+        if not note:
+            return ""
+        if self._personal is not None:
+            for record in records:
+                if record.tool not in ActionNote.QUIET:
+                    where = f" on {record.target}" if record.target else ""
+                    self._personal.activity.record("app", f"{record.tool}{where}: {record.result}")
+        try:
+            state = self._agent.get_state(self._memory.run_config)
+            last = next(
+                message
+                for message in reversed((state.values or {}).get("messages", []))
+                if message.type == "ai" and message.text.strip()
+            )
+            self._agent.update_state(
+                self._memory.run_config,
+                {"messages": [AIMessage(content=last.text + note, id=last.id)]},
+                as_node="model",
+            )
+            logger.info("noted in the conversation: %s", note.strip())
+        except Exception:
+            logger.warning("could not note the reply's actions", exc_info=True)
+            return ""
+        return note
 
     def _selection_seen(self, context: ScreenContext) -> bool:
         """Whether this selection was already given to the model in this conversation.
@@ -409,18 +670,73 @@ class Tzara:
             middleware.insert(
                 0,
                 ResearchRouter(
-                    QuestionRules(self._config.research),
+                    self._question_rules,
                     report=self._activity.report,
                     writing=self._config.prompts.router_writing,
+                    route=lambda: self._turn_route,
                 ),
+            )
+        searches = self._app_searches()
+        fetches = self._app_tools_named(AppRouter.FETCH, ("id", "url", "page_id"))
+        if searches or fetches:
+            router = AppRouter(searches, fetches, lambda: self._turn_open_page)
+            middleware.insert(1 if self._config.web.enabled else 0, router)
+        middleware.append(EmptyReplyRetry())
+        if self._app_rules:
+            middleware.append(
+                PromiseRetry(self._config.mcp.promise_pattern, self._config.prompts.act_now)
             )
         if self._personal is not None:
             middleware.append(
                 MemoryMiddleware(
-                    self._personal.facts, self._personal.settings, self._config.prompts
+                    self._personal.facts,
+                    self._personal.settings,
+                    self._config.prompts,
+                    self._personal.activity,
                 )
             )
         return middleware
+
+    def _app_searches(self) -> dict[str, tuple[str, str]]:
+        """For each connected app that has a search tool among the ones given, how to call it."""
+        found: dict[str, tuple[str, str]] = {}
+        for tool in self._tools:
+            if not isinstance(tool, McpTool) or tool.server in found:
+                continue
+            if not AppRouter.SEARCH.search(tool.remote_name):
+                continue
+            properties = tool.arguments.get("properties", {})
+            argument = "query" if "query" in properties else next(iter(properties), "")
+            if argument:
+                found[tool.server] = (tool.name, argument)
+        return found
+
+    def _app_tools_named(
+        self, pattern: re.Pattern[str], arguments: tuple[str, ...]
+    ) -> dict[str, tuple[str, str]]:
+        """Each connected app's tool named like ``pattern``, and its argument for an address."""
+        found: dict[str, tuple[str, str]] = {}
+        for tool in self._tools:
+            if not isinstance(tool, McpTool) or tool.server in found:
+                continue
+            if not pattern.search(tool.remote_name):
+                continue
+            properties = tool.arguments.get("properties", {})
+            argument = next((name for name in arguments if name in properties), "")
+            if argument:
+                found[tool.server] = (tool.name, argument)
+        return found
+
+    def _remember_stand_in(self, written: str, shown: str) -> None:
+        """Store the sentence shown in place of an empty reply, so a reopened chat keeps it."""
+        if written.strip() or not shown.strip():
+            return
+        try:
+            self._agent.update_state(
+                self._memory.run_config, {"messages": [AIMessage(content=shown)]}, as_node="model"
+            )
+        except Exception:
+            logger.warning("could not store the stand-in for an empty reply", exc_info=True)
 
     def _keep_only_seen_links(self, written: str, shown: str) -> None:
         """Correct the stored conversation when links were taken out of the reply.
@@ -428,8 +744,9 @@ class Tzara:
         The user never saw them, so they must not come back when the chat is reopened or
         restored after a restart. Does nothing if nothing was taken out.
         """
-        if written == shown:
+        if written == shown or not written.strip():
             return
+        logger.info("links the agent never saw were taken out of the reply")
         try:
             state = self._agent.get_state(self._memory.run_config)
             last = next(
@@ -467,6 +784,18 @@ class Tzara:
                 and message.name == "research"
                 and message.text != self._config.prompts.research_spent
             ]
+            spent += [
+                ToolMessage(
+                    content=self._config.prompts.app_spent,
+                    tool_call_id=message.tool_call_id,
+                    id=message.id,
+                    name=message.name,
+                )
+                for message in (state.values or {}).get("messages", [])
+                if message.type == "tool"
+                and str(message.tool_call_id).startswith(AppRouter.ROUTED)
+                and message.text != self._config.prompts.app_spent
+            ]
             if spent:
                 self._agent.update_state(
                     self._memory.run_config, {"messages": spent}, as_node="tools"
@@ -483,6 +812,10 @@ class Tzara:
                 )
         except Exception:
             logger.warning("could not drop the spent search results", exc_info=True)
+
+    def resume_history(self) -> None:
+        """Put the conversation the memory has just switched to into the agent's checkpoint."""
+        self._restore_history()
 
     def _restore_history(self) -> None:
         """Put back the conversation the memory found on disk, to carry on where it left off."""
@@ -508,6 +841,7 @@ class Tzara:
                 system=self._system_rules,
                 memory=self._personal is not None,
                 screen=self._config.screen.enabled,
+                apps=self._app_rules,
             ),
             middleware=self._middleware(),
             checkpointer=self._memory.checkpointer,

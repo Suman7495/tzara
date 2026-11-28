@@ -16,13 +16,14 @@ It's fully local, supports multiple models, can search the web, open apps and si
 - [x] **Lightweight & low footprint** — Small Python core with fast startup and low memory usage, runs comfortably on a personal laptop.
 - [x] **Multi-Model Support** — Switch between Ollama, Anthropic, OpenAI, and Google models at runtime
 - [x] **Conversation Memory** — Remembers earlier messages across turns, interrupts and model switches
-- [x] **Understands what you are looking at** (off until you turn it on in Settings) — Open Tzara over any app and say "translate this", "summarize it" or "make it shorter": it knows which app and window you are in and the text you had selected. "Summarize this page" or "translate this document" reads the page behind it (public web pages, and text or PDF files you have open) and answers from it; two one-word buttons (Explain, Translate) do the common things. A box above the input always shows what Tzara is aware of (the app, the window, your selection), during and after replies; it goes with every message, you can remove it, and nothing is read from password managers or password fields. macOS asks for the Accessibility permission once
+- [x] **Understands what you are looking at** (off until you turn it on in Settings) — Open Tzara over any app and say "translate this" or "explain it": it knows which app and window you are in and the text you had selected. "Summarize this page" or "translate this document" reads the page behind it (public web pages, and text or PDF files you have open) and answers from it; two one-word buttons (Explain, Translate) do the common things. Ask about what you are working on ("reply to this email, saying I will pay Thursday", "what amount is she asking for?") and it also reads the field you are typing in and the text in your window. It leans towards your screen: a question that has nothing to do with it is not searched online by itself (a search takes a while); Tzara asks "Search online?" with Yes/No buttons, unless you asked for the web ("search", "news", "weather"). A box above the input always shows what Tzara is aware of (the app, the window, your selection), during and after replies; it goes with every message, you can remove it, and nothing is read from password managers or password fields. macOS asks for the Accessibility permission once
+- [x] **Connects to your apps (MCP)** — Add apps in Settings → Apps with one press (Microsoft 365: Outlook and Calendar, OneDrive files, Teams) or any MCP server of your own ("Other app…"). Tzara can then use their tools ("what is on my calendar tomorrow?"). Only read-only tools are offered unless you allow more, and what an app returns is treated as data, never as instructions. Needs Node.js for most apps. Sign in to Microsoft 365 by asking Tzara to "sign in to Microsoft 365": it gives you a link and a code
 - [x] **Web search and research** — For a question that asks for facts (how to fix something, health, news, comparisons, what to buy) it searches the web, reads the best pages with a proper article extractor (`trafilatura`; Stack Overflow through its public API), prefers official, reference and documentation sources, copies code from the docs, and answers from that with its sources. It uses no extra model request for this, so it stays quick, and it says what it is doing while it works (on by default; DuckDuckGo)
 - [x] **Open things and control music** — Opens apps (including Terminal), websites, files and folders, and plays, pauses or skips music and sets the volume (macOS; it cannot run commands)
 - [x] **Memory** — Remembers lasting things about you (your name, preferences, how you like answers) and picks the conversation up again after a restart. Ask it to remember or forget something; see and delete everything in Settings
 - [x] **Rich replies** — Formatted answers (bold, lists, headings, code) with clickable links, a **Copy** button under every message, and follow-up buttons you can click to ask the next question
 - [x] **Local API** — Background HTTP server with streaming replies (loopback-only, token-protected)
-- [x] **macOS app** — Tap Control+Option anywhere for a small chat box right at your pointer
+- [x] **macOS app** — Tap Right Option in any text field for a small bar: say what to write (an email, a reply, a rewrite) and it is written there
 
 ## Install
 
@@ -34,7 +35,7 @@ curl -fsSL https://raw.githubusercontent.com/Suman7495/tzara/main/install.sh | s
 
 1. **Open Tzara:** double-click `~/Applications/Tzara.app` (or use Spotlight). A small chat box appears.
 2. **Allow Input Monitoring** when macOS asks (or in *System Settings → Privacy & Security → Input Monitoring*), then quit and reopen Tzara.
-3. **Tap Control+Option** anywhere (press both, release, touch nothing else) to open or close the box at your pointer.
+3. **Tap Right Option** in any text field (nothing else pressed) to open the small bar, say what to write, press Enter. Nothing is written until you ask, and nothing is sent.
 
 Not working? `tzara status` should say `ready`, and the log is `~/Library/Logs/tzara/app.log`. More in [macOS app](#macos-app). Prefer a terminal? Run `tzara` ([command line](#command-line)).
 
@@ -69,7 +70,7 @@ Models are written `provider:model-name`, e.g. `ollama:qwen3:8b`, `anthropic:cla
 
 A menu-bar app that opens a small chat box beside your mouse, over whatever you're doing, including full-screen apps. It talks to the local server below.
 
-- **Tap Control+Option** opens or closes the box. It opens with the input line under your pointer, so you can type straight away; your previous chat is shown. **×** or **Esc** closes it.
+- **Tap Right Option** opens the small bar next to your text field; **Esc** closes it. Ask a question and it answers in the bar; drag it to move it; it hides after 3 seconds of no interaction (pin it to keep it). The **dashboard** (conversation, settings, memory, apps) opens from the menu-bar icon.
 - **Pencil**: new conversation. **Gear → Settings**: pick the model from a dropdown (or type any `provider:model-name`), rename, see and delete what Tzara remembers, check the hotkey and server, **Update** to the latest release, **Uninstall Tzara**.
 - **Replies are formatted** (bold, lists, headings, code) and links open in your browser. The **copy** icon in the top-right corner of a message copies its text. While Tzara works it says what it is doing ("Searching the web for …", "Reading 5 pages…") instead of only spinning. Closing the box (Esc or the − button) while a reply is being written lets it finish in the background; the menu-bar icon shows when it is ready.
 - **Links.** Any link in a reply is one Tzara really got from a search or a page it read that turn, or one you wrote yourself. Anything else it writes is taken out before you see it, so it cannot make a product page up.
@@ -84,7 +85,7 @@ A menu-bar app that opens a small chat box beside your mouse, over whatever you'
 - `tzara status` should say `ready`; if not, `tzara start`.
 - Without Input Monitoring only the box and the menu-bar icon work. Switch **Tzara** on in *System Settings → Privacy & Security → Input Monitoring*, then quit and reopen it. The log line `watching for Control+Option (Input Monitoring granted: true)` confirms it.
 
-The hotkey check looks only for the Control+Option tap and doesn't record what you type. Releases are signed with one fixed certificate, so updating keeps the permission (a build you make yourself is signed ad-hoc, and asks again, unless you run `app/scripts/create_signing_identity.sh` once). The app's log is `~/Library/Logs/tzara/app.log`. `make app-test` runs its tests.
+The hotkey check looks only for the Right Option tap and doesn't record what you type. Releases are signed with one fixed certificate, so updating keeps the permission (a build you make yourself is signed ad-hoc, and asks again, unless you run `app/scripts/create_signing_identity.sh` once). The app's log is `~/Library/Logs/tzara/app.log`. `make app-test` runs its tests.
 
 ## Local server
 

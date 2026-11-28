@@ -44,6 +44,23 @@ class Snippet:
     text: str
 
 
+@dataclass(frozen=True)
+class Conversation:
+    """A stored conversation, for listing.
+
+    Attributes:
+        id: Identifies it.
+        started_at: When it began, as a Unix time.
+        title: What it began with.
+        messages: How many messages it holds.
+    """
+
+    id: int
+    started_at: float
+    title: str
+    messages: int
+
+
 class ConversationLog:
     """Keeps what the user and the assistant said, conversation by conversation.
 
@@ -88,6 +105,20 @@ class ConversationLog:
             (time.time(), conversation_id),
         )
 
+    def reopen(self, conversation_id: int) -> bool:
+        """Make a finished conversation the one in progress again. Returns whether it exists."""
+        found = self._db.execute(
+            "SELECT 1 FROM conversations WHERE id = ? AND EXISTS "
+            "(SELECT 1 FROM messages WHERE conversation_id = ?)",
+            (conversation_id, conversation_id),
+        )
+        if not found:
+            return False
+        self._db.changed(
+            "UPDATE conversations SET ended_at = NULL WHERE id = ?", (conversation_id,)
+        )
+        return True
+
     def latest_open(self) -> int | None:
         """The most recent conversation that was not ended and has something in it."""
         rows = self._db.execute(
@@ -115,6 +146,24 @@ class ConversationLog:
                 break
             kept.append(StoredMessage(row["role"], row["text"], row["at"]))
         return kept[::-1]
+
+    def recent(self, limit: int) -> list[Conversation]:
+        """The latest conversations that have something in them, newest first."""
+        rows = self._db.execute(
+            "SELECT c.id, c.started_at, c.title, COUNT(m.id) AS n FROM conversations c "
+            "JOIN messages m ON m.conversation_id = c.id GROUP BY c.id "
+            "ORDER BY c.id DESC LIMIT ?",
+            (limit,),
+        )
+        return [Conversation(r["id"], r["started_at"], r["title"], r["n"]) for r in rows]
+
+    def transcript(self, conversation_id: int, limit: int = 500) -> list[StoredMessage]:
+        """Everything said in a conversation, oldest first (at most ``limit`` messages)."""
+        rows = self._db.execute(
+            "SELECT role, text, at FROM messages WHERE conversation_id = ? ORDER BY id LIMIT ?",
+            (conversation_id, limit),
+        )
+        return [StoredMessage(r["role"], r["text"], r["at"]) for r in rows]
 
     def search(self, query: str, limit: int, exclude: int | None = None) -> list[Snippet]:
         """Messages from past conversations that mention the words of ``query``.
